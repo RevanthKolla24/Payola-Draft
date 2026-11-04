@@ -3,6 +3,6 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "scripts": { "start": "node server.js", "test": "node --test test/*.test.js", "check": "node --check app.js && node --check lib.js && node --check importer.js && node --check server.js" },
+  "scripts": { "start": "node server.js", "test": "node --test test/*.test.js", "test:browser": "node test/browser.mjs", "check": "node --check app.js && node --check attribution.js && node --check lib.js && node --check importer.js && node --check reports.js && node --check import-job.js && node --check import-worker.js && node --check lastfm.js && node --check lastfm-client.js && node --check apple.js && node --check apple-client.js && node --check server.js && node --check test/browser.mjs" },
   "engines": { "node": ">=22.15" }
 }

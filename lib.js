@@ -28,21 +28,23 @@ export function summarize(records, { from = '', to = '' } = {}) {
   const months = new Map();
   const audit = { included: 0, short: 0, unsupported: 0, invalid: 0, outside: 0 };
   let ms = 0;
+  const scrobbles = records.some(r => r.source === 'lastfm');
   for (const r of records) {
     if (r.invalid) { audit.invalid++; continue; }
     if ((from && r.date < from) || (to && r.date > to)) { audit.outside++; continue; }
     if (!r.supported) { audit.unsupported++; continue; }
-    if (r.ms < 30000) { audit.short++; continue; }
-    audit.included++; ms += r.ms;
+    if (r.source !== 'lastfm' && r.ms < 30000) { audit.short++; continue; }
+    audit.included++; ms += r.ms || 0;
     const month = r.date.slice(0, 7);
     const bucket = months.get(month) || { month, plays: 0, ms: 0 };
-    bucket.plays++; bucket.ms += r.ms; months.set(month, bucket);
+    bucket.plays++; bucket.ms += r.ms || 0; months.set(month, bucket);
     let artist = artists.get(r.artist);
     if (!artist) { artist = { name: r.artist, plays: 0, ms: 0, tracks: new Map() }; artists.set(r.artist, artist); }
-    artist.plays++; artist.ms += r.ms;
+    artist.plays++; artist.ms += r.ms || 0;
     artist.tracks.set(r.track, (artist.tracks.get(r.track) || 0) + 1);
   }
-  return { audit, ms, plays: audit.included, amount: audit.included * RATE, months: [...months.values()].sort((a, b) => a.month.localeCompare(b.month)),
+  if (scrobbles) { ms = null; for (const a of artists.values()) a.ms = null; for (const m of months.values()) m.ms = null; }
+  return { audit, ms, plays: audit.included, amount: scrobbles ? null : audit.included * RATE, months: [...months.values()].sort((a, b) => a.month.localeCompare(b.month)),
     artists: [...artists.values()].sort((a, b) => b.plays - a.plays || a.name.localeCompare(b.name)) };
 }
 
