@@ -6,7 +6,7 @@ Download session creates a versioned JSON file with normalized records, selected
 
 Restore validates format/version, benchmark metadata, dates, source consistency and metadata bounds before asking to replace results. Limits are 25 MB and 200,000 records. Rejected files preserve current results. Restored provenance is user-editable, not authenticated, and is disclosed in the history panel, CSV and PNG. Last.fm duration remains unknown; dollar scenarios are disabled until a fresh explicit opt-in. A successful live refresh replaces restored provenance.
 
-Restored Spotify sessions are read-only: original file hashes and imported-JSON byte accounting are not preserved. Start a new Import history view to add original files. Large sessions may exceed 25 MB; CSV remains available for summaries. Parsing/validation is local on the main thread and may briefly pause the UI near the limit; session parsing does not yet use a cancellable worker.
+Restored Spotify sessions are read-only: original file hashes and imported-JSON byte accounting are not preserved. Use **Clear data** and confirm the reset before adding original files. Large sessions may exceed 25 MB; CSV remains available for summaries. Parsing/validation is local on the main thread and may briefly pause the UI near the limit; session parsing does not yet use a cancellable worker.
 
 Top tracks shows ten artist/title pairs for the displayed period, without cross-service or version matching. Last.fm uses scrobble labels. Manual artist counts never invent tracks. Artist concentration is the top five (or fewer) artists' share of included plays, recorded scrobbles or self-reported counts—not platform royalty-pool share. No discovery dates or actual earnings are inferred.
 
@@ -17,6 +17,12 @@ Last.fm cannot verify the original streaming service or actual duration. The Las
 Only explicitly confirmed Spotify histories can opt into a hypothetical scenario using the existing Duetti 2024 Spotify sample benchmark ($0.003 per scrobble). This is not verified royalties, paid-stream eligibility, or artist take-home. Mixed, unknown, Apple Music, YouTube Music, and other-service histories remain unpriced. No allocations or listening durations are inferred. CSVs and images include source and scenario disclosures. Service declarations are not persisted; optional local storage still remembers only the Last.fm username.
 
 # Payola Draft
+
+## Visual identity
+
+The original artwork is `final logo payola draft.png`. Padded square derivatives in `assets/` provide the header/footer logo, 32px and 192px favicons, and 180px Apple touch icon. Only these web derivatives are publicly served; the original is preserved unchanged.
+
+The theme tokens at the top of `styles.css` use logo cream (`#F9EFDF`), plum (`#523A56`), and pastel chart/highlight accents. PNG exports read these same tokens and include the local logo, with a text-only fallback if the image cannot load. No external image service or runtime dependency is required.
 
 ## Apple Music connection proof of concept
 

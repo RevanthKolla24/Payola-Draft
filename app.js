@@ -71,8 +71,9 @@ function render() {
   result = mode === 'manual' ? manual || { plays: 0, amount: 0, ms: null, artists: [], audit: null } : summarize(records, { from, to });
   if (mode === 'lastfm') { result.ms = null; result.amount = null; }
   $('#stat-plays').textContent = number(result.plays);
-  $('#stat-hours').innerHTML = result.ms === null ? '—' : `${number(Math.round(result.ms / 3600000))} <em>hrs</em>`;
-  $('#hours-note').textContent = result.ms === null ? 'Not available from manual counts' : 'With your favorite recordings';
+  const noHistory = mode === 'routes' || (mode === 'import' && !records.length);
+  $('#stat-hours').innerHTML = result.ms === null || noHistory ? '—' : `${number(Math.round(result.ms / 3600000))} <em>hrs</em>`;
+  $('#hours-note').textContent = noHistory ? 'No listening history loaded' : result.ms === null ? 'Not available from manual counts' : 'With your favorite recordings';
   $('#stat-artists').textContent = number(result.artists.length);
   $('#receipt-total').textContent = money(result.amount);
   $('#receipt-plays').textContent = number(result.plays);
@@ -85,7 +86,7 @@ function render() {
   $('#data-note').textContent = mode === 'sample' ? "You're exploring fictional listening data. Import your history to make it yours." : mode === 'manual' ? 'Self-reported counts are not verified streams. The estimate does not account for track eligibility.' : `History stays in this tab. ${number(duplicateCount)} matching playback occurrences skipped across files. Coverage reflects these files; completeness is not verified.`;
   $('#note-import').hidden = mode === 'import' || selectedService !== 'spotify' || mode === 'routes';
   $('#share-button').disabled = result.plays === 0;
-  $('#audit').textContent = result.audit ? `Included: ${number(result.audit.included)} · Short plays: ${number(result.audit.short)} · Unsupported: ${number(result.audit.unsupported)} · Invalid: ${number(result.audit.invalid)} · Outside selected dates: ${number(result.audit.outside)}. Invalid records cannot be assigned to a date range.` : 'Manual mode: all entered plays are self-reported. No duration or eligibility checks are possible.';
+  $('#audit').textContent = result.audit ? `Included: ${number(result.audit.included)} · Short plays: ${number(result.audit.short)} · Unsupported: ${number(result.audit.unsupported)} · Invalid: ${number(result.audit.invalid)} · Outside selected dates: ${number(result.audit.outside)}. Invalid records cannot be assigned to a date range. Import safety limits: duration 0–24 hours, artist 500 characters, title 1,000 characters, playback identity 8,192 characters, and four-digit calendar dates.` : 'Manual mode: all entered plays are self-reported. No duration or eligibility checks are possible.';
   $('#calculation-formula').textContent = `${number(result.plays)} included plays × $0.003 = ${money(result.amount)} USD`;
   $('#export-csv').disabled = result.plays === 0;
   $('#period-controls').hidden = mode === 'manual';
@@ -233,9 +234,27 @@ function renderRows() {
     renderAttribution();
   }
 }
+function syncService() {
+  $('#service-picker').value = selectedService;
+  $('[data-mode="import"]').hidden = selectedService !== 'spotify';
+  $('#service-help').textContent = 'Last.fm recommended if you already scrobble—not required. Manual counts are also available. ' + (selectedService === 'spotify' ? 'Spotify JSON/ZIP imports are supported.' : 'No history importer or validated royalty benchmark for this service.');
+  renderAvailability();
+}
+function confirmDiscard() {
+  return !((mode !== 'sample' && (records.length || manual || lastfmLoaded || importedNames.size || restoredSession)) || busy || lastfmController)
+    || window.confirm('Replace the current view? This clears loaded history and cancels pending work. Download a session or CSV first if you want to keep it.');
+}
+function requestMode(next) {
+  if (next === mode) return;
+  if (restoring) { notify('Wait for session restore to finish.'); return; }
+  if (!confirmDiscard()) return;
+  setMode(next);
+}
 function setMode(next) {
   if (next === 'import' && selectedService !== 'spotify') return;
   if (next === 'lastfm' && integrations?.lastfm !== true && !restoring) { notify('Last.fm is unavailable on this site. Choose manual counts or a supported file import.'); return; }
+  if (next === 'sample') selectedService = 'spotify';
+  syncService();
   restoredSession = false;
   lastfmController?.abort(); lastfmController = null; lastfmLoaded = null; lastfmAttribution = attribution();
   stopImport();
@@ -260,11 +279,16 @@ function setMode(next) {
   } else panel.innerHTML = '';
   render();
 }
-document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => setMode(tab.dataset.mode)));
-$('#note-import').addEventListener('click', () => setMode('import'));
+document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => requestMode(tab.dataset.mode)));
+$('#note-import').addEventListener('click', () => requestMode('import'));
 $('#artist-search').addEventListener('input', renderRows);
 $('#monthly-metric').addEventListener('change', renderInsights);
-$('#clear-button').addEventListener('click', () => { setMode(mode === 'lastfm' ? 'lastfm' : selectedService === 'spotify' ? 'import' : 'routes'); notify('Listening data cleared from this tab. Saved usernames can be removed with “Forget saved username”.'); });
+$('#clear-button').addEventListener('click', () => {
+  if (restoring) { notify('Wait for session restore to finish.'); return; }
+  if (!confirmDiscard()) return;
+  setMode(mode === 'lastfm' ? 'lastfm' : selectedService === 'spotify' ? 'import' : 'routes');
+  notify('Listening data cleared from this tab. Saved usernames can be removed with “Forget saved username”.');
+});
 $('#input-panel').addEventListener('submit', event => {
   if (event.target.id === 'lastfm-form') { event.preventDefault(); fetchScrobbles(event.target); return; }
   if (event.target.id !== 'manual-form') return;
@@ -320,7 +344,8 @@ function stopImport() {
 }
 function importFiles(files) {
   if (!files.length || busy) return;
-  if (restoredSession) { notify('Start a new Import history view before adding files. Restored sessions do not retain original import hashes or byte accounting.'); return; }
+  if (restoring) { notify('Wait for session restore to finish.'); return; }
+  if (restoredSession) { notify('Use Clear data before adding files. Restored sessions do not retain original import hashes or byte accounting.'); return; }
   if (!window.Worker) { notify('This browser does not support background imports. Try a modern browser.'); return; }
   const feedback = $('#import-feedback'), input = $('#history-files');
   const cancel = document.createElement('button'); cancel.id = 'cancel-import'; cancel.className = 'text-button'; cancel.textContent = 'Cancel import';
@@ -411,16 +436,29 @@ $('#share-button').addEventListener('click', () => downloadCard());
 $('#artist-detail').addEventListener('click', event => {
   if (event.target.closest('#artist-download') && selectedArtist) downloadCard(selectedArtist, $('#artist-card-style').value);
 });
-function downloadCard(artist = null, style = 'value') {
+let cardLogo;
+function loadCardLogo() {
+  cardLogo ??= new Promise(resolve => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => resolve(null);
+    image.src = '/assets/logo.png';
+  });
+  return cardLogo;
+}
+async function downloadCard(artist = null, style = 'value') {
   // Capture the selection before asynchronous image generation.
   const source = mode;
   const plays = artist ? artist.plays : result.plays;
   const valueCard = (mode !== 'manual' || manualService === 'spotify') && (mode !== 'lastfm' || scenarioActive()) && style === 'value';
   const canvas = document.createElement('canvas'); canvas.width = 1000; canvas.height = 1420;
   const ctx = canvas.getContext('2d'); if (!ctx) { notify('Your browser could not create a receipt image.'); return; }
-  ctx.fillStyle = '#f6f5f0'; ctx.fillRect(0, 0, 1000, 1420); ctx.fillStyle = '#eef0e6'; ctx.fillRect(75, 65, 850, 1280);
-  const text = (value, x, y, font = '24px monospace', color = '#344a34') => { ctx.fillStyle = color; ctx.font = font; ctx.fillText(value, x, y, 730); };
-  const line = y => { ctx.strokeStyle = '#bbc5ae'; ctx.setLineDash([7, 7]); ctx.beginPath(); ctx.moveTo(135, y); ctx.lineTo(865, y); ctx.stroke(); };
+  const theme = getComputedStyle(document.documentElement);
+  const color = name => theme.getPropertyValue(`--${name}`).trim();
+  ctx.fillStyle = color('paper'); ctx.fillRect(0, 0, 1000, 1420); ctx.fillStyle = color('field'); ctx.fillRect(75, 65, 850, 1280);
+  ['coral', 'lavender', 'mint', 'highlight', 'blue', 'pink', 'teal'].forEach((name, index) => { ctx.fillStyle = color(name); ctx.fillRect(135 + index * 104.28, 190, 105, 8); });
+  const text = (value, x, y, font = '24px monospace', ink = color('ink'), maxWidth = 865 - x) => { ctx.fillStyle = ink; ctx.font = font; ctx.fillText(value, x, y, maxWidth); };
+  const line = y => { ctx.strokeStyle = color('line'); ctx.setLineDash([7, 7]); ctx.beginPath(); ctx.moveTo(135, y); ctx.lineTo(865, y); ctx.stroke(); };
   text('YOUR PAYOLA DRAFT', 135, 135, '22px monospace');
   if (restoredSession) text('RESTORED SESSION · PROVENANCE NOT AUTHENTICATED', 135, 170, '15px Arial');
   text(artist ? 'Your artist.' : 'Good music.', 135, 242, '72px Georgia'); text(artist ? artist.name : 'Real impact.', 135, 322, artist ? '54px Georgia' : '72px Georgia'); line(365);
@@ -434,8 +472,8 @@ function downloadCard(artist = null, style = 'value') {
   text(valueCard ? money(plays * RATE) : number(plays), 135, 642, '108px Arial');
   text(valueCard ? `${number(plays)} ${mode === 'lastfm' ? 'SCROBBLES' : 'PLAYS'} · USD · $3 / 1,000` : `${artist?.ms == null ? (mode === 'lastfm' ? 'DURATION UNKNOWN' : 'SELF-REPORTED') : `${(artist.ms / 3600000).toFixed(1)} HOURS`} · LISTENING CARD`, 135, 700, '21px monospace'); line(745);
   if (artist) {
-    [...artist.tracks.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).forEach(([name, count], index) => { text(`${index + 1}. ${name.slice(0, 35)}`, 135, 800 + index * 58, '27px Arial'); text(`${number(count)} ${mode === 'lastfm' ? 'scrobbles' : 'plays'}`, 700, 800 + index * 58, '21px monospace'); });
-  } else result.artists.slice(0, 3).forEach((a, index) => { text(`${index + 1}. ${a.name.length > 32 ? `${a.name.slice(0, 31)}…` : a.name}`, 135, 800 + index * 58, '27px Arial'); text(valueCard ? money(a.plays * RATE) : `${number(a.plays)} scrobbles`, 700, 800 + index * 58, '24px monospace'); });
+    [...artist.tracks.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).forEach(([name, count], index) => { text(`${index + 1}. ${name.slice(0, 35)}`, 135, 800 + index * 58, '27px Arial', color('ink'), 535); text(`${number(count)} ${mode === 'lastfm' ? 'scrobbles' : 'plays'}`, 700, 800 + index * 58, '21px monospace'); });
+  } else result.artists.slice(0, 3).forEach((a, index) => { text(`${index + 1}. ${a.name.length > 32 ? `${a.name.slice(0, 31)}…` : a.name}`, 135, 800 + index * 58, '27px Arial', color('ink'), 535); text(valueCard ? money(a.plays * RATE) : `${number(a.plays)} ${mode === 'lastfm' ? 'scrobbles' : 'plays'}`, 700, 800 + index * 58, '24px monospace'); });
   line(980);
   if (artist) text(`${(artist.plays / result.plays * 100).toFixed(1)}% of your included ${mode === 'lastfm' ? 'scrobbles' : 'plays'} · not royalty-pool share`, 135, 1020, '21px Arial');
   if (valueCard) {
@@ -444,6 +482,8 @@ function downloadCard(artist = null, style = 'value') {
     text('Plan, country, contracts, eligibility not adjusted.', 135, 1140, '20px Arial');
   } else { text('Your listening, not a royalty or payout statement.', 135, 1070, '23px Arial'); text(mode === 'lastfm' ? 'Data from Last.fm. Duration and eligibility unknown.' : 'Only included plays from the selected source.', 135, 1110, '21px Arial'); }
   text('THANK YOU FOR LISTENING', 135, 1240, '23px monospace'); text('Payola Draft', 135, 1285, '20px Arial');
+  const logo = await loadCardLogo();
+  if (logo) ctx.drawImage(logo, 785, 95, 80, 80);
   canvas.toBlob(blob => {
     if (!blob) { notify('Could not generate the image. Please try again.'); return; }
     const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = artist ? `payola-draft-artist-${style}-${source}.png` : `payola-draft-${source}.png`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 10000); notify('Payola Draft downloaded. It includes the visible highlights, not your raw history.');
@@ -500,15 +540,12 @@ render();
 checkIntegrations();
 $('#service-picker').addEventListener('change', () => {
   const nextService = $('#service-picker').value;
-  if ((mode !== 'sample' && (records.length || manual || lastfmLoaded || importedNames.size)) || busy || lastfmController) {
-    if (!window.confirm('Switch streaming service? This clears the loaded history and cancels any pending request or import. Download a CSV first if you want to keep the current summary.')) {
-      $('#service-picker').value = selectedService;
-      return;
-    }
+  if (nextService === selectedService) return;
+  if (restoring || !confirmDiscard()) {
+    $('#service-picker').value = selectedService;
+    if (restoring) notify('Wait for session restore to finish.');
+    return;
   }
   selectedService = nextService;
-  document.querySelector('[data-mode="import"]').hidden = selectedService !== 'spotify';
-  renderAvailability();
-  $('#service-help').textContent = 'Last.fm recommended if you already scrobble—not required. Manual counts are also available. ' + (selectedService === 'spotify' ? 'Spotify JSON/ZIP imports are supported.' : 'No history importer or validated royalty benchmark for this service.');
   setMode('routes');
 });

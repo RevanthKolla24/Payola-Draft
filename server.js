@@ -7,6 +7,7 @@ import { validateLastfmQuery, fetchLastfmPage, createLimiter } from './lastfm.js
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const publicFiles = new Set(['index.html', 'styles.css', 'app.js', 'lib.js', 'importer.js', 'reports.js', 'import-job.js', 'import-worker.js', 'lastfm-client.js', 'apple.html', 'apple-client.js', 'apple.js', 'attribution.js', 'session.js', 'insights.js']);
+for (const name of ['logo', 'favicon-32', 'favicon-192', 'apple-touch-icon']) publicFiles.add(`assets/${name}.png`);
 const allowGlobal = createLimiter({ limit: 120 });
 const clients = new Map(); let activeRequests = 0;
 function integrationStatus() {
@@ -45,7 +46,7 @@ async function lastfmRequest(req, res, url) {
     if (!res.destroyed) reply(502, error.name === 'AbortError' ? 'Last.fm request timed out. Try again.' : 'Last.fm could not provide this history. Check the username and privacy settings, or try again later.');
   } finally { clearTimeout(timeout); res.off('close', abort); activeRequests--; }
 }
-const types = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript' };
+const types = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.png': 'image/png' };
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, 'http://localhost');
@@ -67,7 +68,7 @@ const server = http.createServer(async (req, res) => {
     if (!publicFiles.has(name)) { res.writeHead(404); res.end('Not found'); return; }
     const content = await readFile(path.join(root, name));
     res.writeHead(200, {
-      'Content-Type': `${types[path.extname(name)]}; charset=utf-8`,
+      'Content-Type': types[path.extname(name)] + (name.endsWith('.png') ? '' : '; charset=utf-8'),
       'Content-Security-Policy': `default-src 'self'; script-src 'self'${name === 'apple.html' ? ' https://js-cdn.music.apple.com' : ''}; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self'${name === 'apple.html' ? ' https://*.apple.com https://*.itunes.apple.com' : ''}; frame-src ${name === 'apple.html' ? 'https://*.apple.com https://*.itunes.apple.com' : "'none'"}; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`,
       'Referrer-Policy': 'no-referrer',
       'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store',

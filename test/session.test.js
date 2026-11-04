@@ -1,11 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sessionText, parseSession, MAX_SESSION_FILE_BYTES } from '../session.js';
-import { sampleRecords, summarize } from '../lib.js';
+import { sampleRecords, summarize, normalizeRecords } from '../lib.js';
 import { attribution } from '../attribution.js';
 import { listeningInsights } from '../insights.js';
 
 const state = () => ({ mode: 'sample', selectedService: 'spotify', records: sampleRecords(), filters: { from: '', to: '' }, duplicates: 0 });
+test('import boundaries and invalid records remain session-compatible', () => {
+  const raw = { ts: '2026-01-01T00:00:00Z', ms_played: 86400000, master_metadata_album_artist_name: 'A'.repeat(500), master_metadata_track_name: 'T'.repeat(1000), spotify_track_uri: 'spotify:track:1' };
+  const records = normalizeRecords([raw, { ...raw, ms_played: 86400001 }, { ...raw, master_metadata_album_artist_name: 'A'.repeat(501) }, { ...raw, master_metadata_track_name: 'T'.repeat(1001) }, { ...raw, spotify_track_uri: 'spotify:track:' + 'x'.repeat(9000) }, { ...raw, ts: '+010000-01-01T00:00:00Z' }]);
+  assert.equal(records[0].invalid, undefined);
+  assert.deepEqual(records.slice(1), Array.from({ length: 5 }, () => ({ invalid: true })));
+  const restored = parseSession(sessionText({ ...state(), mode: 'import', records }));
+  assert.deepEqual(restored.records, records);
+  assert.equal(summarize(restored.records).audit.invalid, 5);
+  for (const patch of [{ ms: 86400001 }, { artist: 'A'.repeat(501) }, { track: 'T'.repeat(1001) }, { eventKey: 'x'.repeat(8193) }]) {
+    assert.throws(() => sessionText({ ...state(), mode: 'import', records: [{ ...records[0], ...patch }] }), /Invalid/);
+  }
+});
 test('local sessions round trip records, filters and benchmark metadata', () => {
   const original = state(); original.filters.from = '2026-02-01';
   const output = sessionText(original), restored = parseSession(output);

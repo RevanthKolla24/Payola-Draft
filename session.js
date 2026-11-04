@@ -1,10 +1,9 @@
-import { manualSummary, RATE } from './lib.js';
+import { manualSummary, RATE, validRecordDate as date, validListeningRecord } from './lib.js';
 import { attribution } from './attribution.js';
 
 export const MAX_SESSION_FILE_BYTES = 25 * 1024 * 1024;
 const MAX_RECORDS = 200000;
 const fail = () => { throw new Error('Invalid or unsupported Payola Draft session.'); };
-const date = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
 const count = value => Number.isSafeInteger(value) && value >= 0 && value <= MAX_RECORDS * 100;
 const text = (value, max) => typeof value === 'string' && value.length <= max;
 
@@ -22,10 +21,7 @@ export function validateSession(input) {
     if (!r || typeof r !== 'object') fail();
     if (r.invalid === true && mode !== 'lastfm') return { invalid: true };
     if (!r.supported && mode !== 'lastfm') r = { ...r, artist: r.artist ?? '', track: r.track ?? '' };
-    if (!date(r.date) || !text(r.artist, 500) || !text(r.track, 1000) || typeof r.supported !== 'boolean') fail();
-    if (r.supported && (!r.artist.trim() || !r.track.trim())) fail();
-    if (r.eventKey !== undefined && !text(r.eventKey, 8192)) fail();
-    if (mode === 'lastfm' ? r.source !== 'lastfm' || r.ms !== null || !r.supported : r.source !== undefined || typeof r.ms !== 'number' || !Number.isFinite(r.ms) || r.ms < 0 || r.ms > 86400000) fail();
+    if (!validListeningRecord(r, mode === 'lastfm')) fail();
     return { date: r.date, artist: r.artist, track: r.track, supported: r.supported, ms: r.ms, ...(mode === 'lastfm' ? { source: 'lastfm' } : {}), ...(r.eventKey ? { eventKey: r.eventKey } : {}) };
   });
   let declaration = attribution(), loaded = null, manual = null;

@@ -32,6 +32,14 @@ test('production server health, safe availability, methods and public-file isola
   for (const path of ['/.env', '/.env.example', '/server.js', '/.github/workflows/checks.yml', '/README.md']) assert.equal((await fetch(base + path)).status, 404);
   assert.equal((await fetch(`${base}/api/apple/config`)).status, 503);
   assert.equal((await fetch(base)).status, 200);
+  for (const name of ['logo', 'favicon-32', 'favicon-192', 'apple-touch-icon']) {
+    const image = await fetch(`${base}/assets/${name}.png`);
+    assert.equal(image.status, 200);
+    assert.equal(image.headers.get('content-type'), 'image/png');
+    const bytes = Buffer.from(await image.arrayBuffer());
+    assert.equal(bytes.subarray(1, 4).toString(), 'PNG');
+  }
+  assert.equal((await fetch(`${base}/assets/not-public.png`)).status, 404);
 });
 test('availability reports configuration without exposing credentials', async t => {
   const encode = o => Buffer.from(JSON.stringify(o)).toString('base64url');

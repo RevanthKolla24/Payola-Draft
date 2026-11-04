@@ -3,6 +3,17 @@ export const money = value => new Intl.NumberFormat('en-US', { style: 'currency'
 export const number = value => new Intl.NumberFormat('en-US').format(value);
 export const escapeHTML = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
+// Shared import/session limits keep successfully imported history restorable.
+export const validRecordDate = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
+export function validListeningRecord(r, lastfm = false) {
+  const text = (value, max) => typeof value === 'string' && value.length <= max;
+  return Boolean(r && validRecordDate(r.date) && text(r.artist, 500) && text(r.track, 1000) && typeof r.supported === 'boolean'
+    && (!r.supported || (r.artist.trim() && r.track.trim()))
+    && (r.eventKey === undefined || text(r.eventKey, 8192))
+    && (lastfm ? r.source === 'lastfm' && r.ms === null && r.supported
+      : r.source === undefined && typeof r.ms === 'number' && Number.isFinite(r.ms) && r.ms >= 0 && r.ms <= 86400000));
+}
+
 export function normalizeRecords(data) {
   if (!Array.isArray(data)) throw new Error('Expected a JSON array. Please choose an unzipped Spotify Extended Streaming History JSON file.');
   if (!data.length || !data.some(r => r && typeof r === 'object' && 'ms_played' in r && 'ts' in r)) {
@@ -19,7 +30,7 @@ export function normalizeRecords(data) {
     const normalized = { date: new Date(timestamp).toISOString().slice(0, 10), artist, track, ms: duration, supported: Boolean(isTrack && artist && track) };
     // Keep only a playback identity, never IP addresses or account identifiers.
     normalized.eventKey = JSON.stringify([timestamp, r.spotify_track_uri || null, artist, track, duration]);
-    return normalized;
+    return validListeningRecord(normalized) ? normalized : { invalid: true };
   });
 }
 

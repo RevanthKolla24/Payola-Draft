@@ -16,3 +16,27 @@ test('site and project metadata consistently use Payola Draft', async () => {
   assert.match(contents[1], /payola-draft-\$\{source\}\.png/);
   assert.equal(JSON.parse(contents[2]).name, 'payola-draft');
 });
+
+test('logo assets and both page themes use the final cream/plum palette', async () => {
+  for (const name of ['index.html', 'apple.html']) {
+    const html = await readFile(new URL(`../${name}`, import.meta.url), 'utf8');
+    assert.match(html, /name="theme-color" content="#f9efdf"/);
+    assert.match(html, /src="\/assets\/logo.png"/);
+    assert.match(html, /href="\/assets\/favicon-32.png"/);
+    assert.match(html, /href="\/assets\/apple-touch-icon.png"/);
+    assert.doesNotMatch(html, /▥/);
+  }
+  const css = await readFile(new URL('../styles.css', import.meta.url), 'utf8');
+  assert.match(css, /--paper:#f9efdf/);
+  assert.match(css, /--ink:#523a56/);
+  assert.doesNotMatch(css, /var\(--(?:green|forest)\)/);
+  const app = await readFile(new URL('../app.js', import.meta.url), 'utf8');
+  assert.match(app, /ctx.drawImage\(logo/);
+  assert.doesNotMatch(app, /#344a34|#f6f5f0|#eef0e6/);
+  for (const [name, size] of [['logo', 256], ['favicon-32', 32], ['favicon-192', 192], ['apple-touch-icon', 180]]) {
+    const png = await readFile(new URL(`../assets/${name}.png`, import.meta.url));
+    assert.equal(png.subarray(1, 4).toString(), 'PNG');
+    assert.equal(png.readUInt32BE(16), size);
+    assert.equal(png.readUInt32BE(20), size);
+  }
+});
