@@ -4,6 +4,7 @@ import { attribution, attributionText, SERVICES } from './attribution.js';
 import { loadLastfm } from './lastfm-client.js';
 import { sessionText, parseSession, MAX_SESSION_FILE_BYTES } from './session.js';
 import { listeningInsights } from './insights.js';
+import { initAccounts } from './accounts.js';
 
 const $ = selector => document.querySelector(selector);
 let mode = 'sample';
@@ -68,6 +69,8 @@ function coverage() {
   return `${format(from || min)} – ${format(to || max)} · UTC`;
 }
 function render() {
+  // Repainting (including a rejected restore) must not mark saved history dirty.
+  document.dispatchEvent(new CustomEvent('payola:view', { detail: [mode, selectedService, records, manual, from, to, duplicateCount, lastfmAttribution, lastfmLoaded] }));
   result = mode === 'manual' ? manual || { plays: 0, amount: 0, ms: null, artists: [], audit: null } : summarize(records, { from, to });
   if (mode === 'lastfm') { result.ms = null; result.amount = null; }
   $('#stat-plays').textContent = number(result.plays);
@@ -81,9 +84,9 @@ function render() {
   $('#coverage').textContent = coverage();
   $('#date-toggle').hidden = mode === 'manual';
   if (mode === 'manual') $('#date-form').hidden = true;
-  $('#source-label').textContent = mode === 'sample' ? 'FICTIONAL DATA · REAL MATH' : mode === 'manual' ? 'YOUR COUNTS · HISTORICAL BENCHMARK' : 'ON YOUR DEVICE · NEVER UPLOADED';
+  $('#source-label').textContent = mode === 'sample' ? 'FICTIONAL DATA · REAL MATH' : mode === 'manual' ? 'YOUR COUNTS · HISTORICAL BENCHMARK' : 'LOCAL VIEW · CLOUD SAVES OPTIONAL';
   $('#receipt-kicker').textContent = mode === 'sample' ? 'THE SAMPLE COLLECTION' : mode === 'manual' ? 'YOUR OWN ROTATION' : 'YOUR PRIVATE COLLECTION';
-  $('#data-note').textContent = mode === 'sample' ? "You're exploring fictional listening data. Import your history to make it yours." : mode === 'manual' ? 'Self-reported counts are not verified streams. The estimate does not account for track eligibility.' : `History stays in this tab. ${number(duplicateCount)} matching playback occurrences skipped across files. Coverage reflects these files; completeness is not verified.`;
+  $('#data-note').textContent = mode === 'sample' ? "You're exploring fictional listening data. Import your history to make it yours." : mode === 'manual' ? 'Self-reported counts are not verified streams. The estimate does not account for track eligibility.' : `History stays in this tab unless you explicitly save it to your account. ${number(duplicateCount)} matching playback occurrences skipped across files. Coverage reflects these files; completeness is not verified.`;
   $('#note-import').hidden = mode === 'import' || selectedService !== 'spotify' || mode === 'routes';
   $('#share-button').disabled = result.plays === 0;
   $('#audit').textContent = result.audit ? `Included: ${number(result.audit.included)} · Short plays: ${number(result.audit.short)} · Unsupported: ${number(result.audit.unsupported)} · Invalid: ${number(result.audit.invalid)} · Outside selected dates: ${number(result.audit.outside)}. Invalid records cannot be assigned to a date range. Import safety limits: duration 0–24 hours, artist 500 characters, title 1,000 characters, playback identity 8,192 characters, and four-digit calendar dates.` : 'Manual mode: all entered plays are self-reported. No duration or eligibility checks are possible.';
@@ -204,7 +207,7 @@ function renderSourceLabels() {
   $('#audit').textContent = last ? `Dated scrobbles included: ${number(result.plays)}. ${lastfmLoaded?.skipped || 0} now-playing or unusable entries skipped; ${lastfmLoaded?.duplicates || 0} identical timestamp/artist/track entries collapsed. Coverage is not guaranteed complete.` : $('#audit').textContent;
   $('.amount-head').textContent = last ? 'ROYALTIES' : 'EST. ROYALTIES ↘';
   $('.table-footer > span:last-child').textContent = last ? 'Last.fm · No royalty estimate' : 'USD · Recording royalties only';
-  $('.privacy-card p').innerHTML = last ? 'Username and dates pass through our server to Last.fm.<br>No history is saved by this app. Optional username storage only.' : 'Files are processed on your device.<br>No uploads. No account. No tracking.';
+  $('.privacy-card p').innerHTML = last ? 'Username and dates pass through our server to Last.fm.<br>History is uploaded only with an explicit cloud save.' : 'Files are processed on your device.<br>Guest mode or optional accounts and explicit cloud saves.';
   if (last) {
     $('#artist-rows').querySelectorAll('tr').forEach(row => { if (row.cells.length === 4) row.cells[3].textContent = '—'; });
     $('#monthly-data').querySelectorAll('tbody tr').forEach(row => { row.cells[2].textContent = 'Unavailable'; });
@@ -324,7 +327,7 @@ async function fetchScrobbles(form) {
     if (lastfmController !== controller) return;
     status.textContent = error.name === 'AbortError' ? 'Loading cancelled. Previous results are unchanged. No partial history was saved.' : `${error.message} Previous results are unchanged; no partial history was saved.`;
   } finally {
-    if (lastfmController === controller) { lastfmController = null; button.disabled = false; $('#cancel-lastfm').hidden = true; progress.hidden = true; }
+    if (lastfmController === controller) { lastfmController = null; button.disabled = false; $('#cancel-lastfm').hidden = true; progress.hidden = true; render(); }
   }
 }
 $('#input-panel').addEventListener('change', event => {
@@ -489,13 +492,34 @@ async function downloadCard(artist = null, style = 'value') {
     const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = artist ? `payola-draft-artist-${style}-${source}.png` : `payola-draft-${source}.png`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 10000); notify('Payola Draft downloaded. It includes the visible highlights, not your raw history.');
   }, 'image/png');
 }
+function captureSession() {
+  if (busy || lastfmController || restoring || mode === 'routes') throw new Error('Finish pending work and load history before saving.');
+  if (mode === 'manual' ? !manual : !records.length) throw new Error('Add listening history before saving.');
+  return sessionText({ mode, selectedService: mode === 'sample' ? 'spotify' : selectedService, records, filters: { from, to }, duplicates: duplicateCount,
+    attribution: mode === 'lastfm' ? lastfmAttribution : null,
+    lastfm: mode === 'lastfm' ? { skipped: lastfmLoaded?.skipped || 0, duplicates: lastfmLoaded?.duplicates || 0 } : null,
+    manual: mode === 'manual' && manual ? { artist: manual.artists[0].name, plays: manual.plays } : null });
+}
+function applySession(restored, cloud = false) {
+  selectedService = restored.selectedService;
+  setMode(restored.mode);
+  records = restored.records; manual = restored.manual; manualService = selectedService;
+  from = restored.filters.from; to = restored.filters.to; duplicateCount = restored.duplicates;
+  lastfmAttribution = restored.attribution; lastfmLoaded = restored.lastfm;
+  $('#from-date').value = from; $('#to-date').value = to;
+  if (mode === 'lastfm') {
+    $('#lastfm-form [name="from"]').value = lastfmAttribution.from;
+    $('#lastfm-form [name="to"]').value = lastfmAttribution.to;
+    $('#lastfm-status').textContent = 'Restored history. No username or live connection was restored. Refresh replaces it only after a successful request.';
+  }
+  restoredSession = true;
+  renderAvailability();
+  notify(`${cloud ? 'Cloud' : 'Local'} session restored. History and attribution are user-editable and unverified.`);
+}
 $('#save-session').addEventListener('click', () => {
   if (busy || lastfmController || restoring) { notify('Wait for pending work before saving a session.'); return; }
   try {
-    const output = sessionText({ mode, selectedService: mode === 'sample' ? 'spotify' : selectedService, records, filters: { from, to }, duplicates: duplicateCount,
-      attribution: mode === 'lastfm' ? lastfmAttribution : null,
-      lastfm: mode === 'lastfm' ? { skipped: lastfmLoaded?.skipped || 0, duplicates: lastfmLoaded?.duplicates || 0 } : null,
-      manual: mode === 'manual' && manual ? { artist: manual.artists[0].name, plays: manual.plays } : null });
+    const output = captureSession();
     if (!window.confirm('This session file contains listening history, artist/track names and dates. Keep it private. It is downloaded locally, not uploaded. Continue?')) return;
     const url = URL.createObjectURL(new Blob([output], { type: 'application/json' }));
     const link = document.createElement('a'); link.href = url; link.download = 'payola-draft-session.json'; link.click();
@@ -513,21 +537,7 @@ $('#restore-session').addEventListener('change', async event => {
     const restored = parseSession(await file.text());
     if (busy || lastfmController) throw new Error('Finish or cancel pending work before restoring.');
     if (!window.confirm('Replace this view with the local session? Session files are user-editable, not verified history. Saved Last.fm dollar scenarios are disabled until you opt in again.')) return;
-    selectedService = restored.selectedService; $('#service-picker').value = selectedService;
-    $('[data-mode="import"]').hidden = selectedService !== 'spotify';
-    setMode(restored.mode);
-    records = restored.records; manual = restored.manual; manualService = selectedService;
-    from = restored.filters.from; to = restored.filters.to; duplicateCount = restored.duplicates;
-    lastfmAttribution = restored.attribution; lastfmLoaded = restored.lastfm;
-    $('#from-date').value = from; $('#to-date').value = to;
-    if (mode === 'lastfm') {
-      $('#lastfm-form [name="from"]').value = lastfmAttribution.from;
-      $('#lastfm-form [name="to"]').value = lastfmAttribution.to;
-      $('#lastfm-status').textContent = 'Restored local history. No username or live connection was restored. Refresh replaces it only after a successful request.';
-    }
-    restoredSession = true;
-    renderAvailability();
-    notify('Local session restored. History and attribution are user-editable and unverified.');
+    applySession(restored);
   } catch (error) { notify(`${error.message} Previous results are unchanged.`); }
   finally { restoring = false; render(); }
 });
@@ -538,6 +548,15 @@ $('#restore-scenario').addEventListener('click', () => {
 });
 render();
 checkIntegrations();
+initAccounts({ capture: captureSession, localBusy: () => busy || Boolean(lastfmController) || restoring,
+  canSave: () => mode !== 'routes' && (mode === 'manual' ? Boolean(manual) : records.length > 0),
+  restore: text => {
+    if (busy || lastfmController || restoring) throw new Error('Finish pending work before loading cloud history.');
+    const restored = parseSession(text);
+    restoring = true;
+    try { applySession(restored, true); } finally { restoring = false; render(); }
+  }
+});
 $('#service-picker').addEventListener('change', () => {
   const nextService = $('#service-picker').value;
   if (nextService === selectedService) return;
@@ -549,3 +568,5 @@ $('#service-picker').addEventListener('change', () => {
   selectedService = nextService;
   setMode('routes');
 });
+// Seed the account revision tracker with the initial session identity.
+render();

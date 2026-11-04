@@ -1,5 +1,9 @@
 # Service selection and self-reported attribution
 
+## Optional shared Firebase accounts
+
+Implemented locally, **disabled by default and not deployed**. Payola Draft can use the existing Job Tracker Firebase identity project, with separate owner-only listening snapshots and explicit save/load/delete. Guest workflows and local session files still work without signing in. See [the account setup, security rules, storage design, launch blockers and test instructions](./ACCOUNTS.md) before enabling anything. No rules have been published and Job Tracker has not been modified. Coordinated shared-account deletion in Job Tracker remains a launch blocker.
+
 ## Local sessions and listening insights
 
 Download session creates a versioned JSON file with normalized records, selected dates, source labels, duplicate audit counts, manual counts and Last.fm declarations. It contains private listening history: keep it private. It excludes saved usernames, API credentials, original file names and original file contents. This is explicit local download/restore, not cloud or automatic browser storage.
@@ -14,7 +18,7 @@ Choose Spotify, Apple Music, or YouTube Music before choosing a route. Last.fm i
 
 Last.fm cannot verify the original streaming service or actual duration. The Last.fm form defaults to mixed/unknown service; choosing an onboarding service shows supported routes without declaring history attribution. A single-service declaration requires confirmation that **all scrobbles in the requested period** came from that service. The declaration is self-reported, not verified, and is committed only with a successful load. Changing the requested range or declared service resets confirmation; changing form controls does not relabel previously loaded history. Filters only narrow the loaded history; comparisons do not establish coverage beyond it.
 
-Only explicitly confirmed Spotify histories can opt into a hypothetical scenario using the existing Duetti 2024 Spotify sample benchmark ($0.003 per scrobble). This is not verified royalties, paid-stream eligibility, or artist take-home. Mixed, unknown, Apple Music, YouTube Music, and other-service histories remain unpriced. No allocations or listening durations are inferred. CSVs and images include source and scenario disclosures. Service declarations are not persisted; optional local storage still remembers only the Last.fm username.
+Only explicitly confirmed Spotify histories can opt into a hypothetical scenario using the existing Duetti 2024 Spotify sample benchmark ($0.003 per scrobble). This is not verified royalties, paid-stream eligibility, or artist take-home. Mixed, unknown, Apple Music, YouTube Music, and other-service histories remain unpriced. No allocations or listening durations are inferred. CSVs and images include source and scenario disclosures. Declarations are retained only in explicit session downloads or cloud snapshots. Optional device storage remembers a Last.fm username and, when requested, the Firebase sign-in; listening history is not automatically persisted.
 
 # Payola Draft
 

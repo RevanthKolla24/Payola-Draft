@@ -17,3 +17,38 @@
 .month-column:nth-child(3n+2) .month-track>div{background:var(--teal)}
 .month-column:nth-child(3n) .month-track>div{background:var(--pink)}
 input,select,progress{accent-color:var(--plum)}
+
+/* Optional account service remains separate from local-first workflows. */
+.account-panel{margin:32px 0 0}.account-panel p{overflow-wrap:anywhere}
+.account-panel form{display:flex;flex-wrap:wrap;gap:16px;align-items:end}
+.account-panel label{display:flex;flex-direction:column;gap:8px;font-size:12px;min-width:0}
+.account-panel fieldset{display:flex;flex-wrap:wrap;gap:16px;border:1px solid var(--line);padding:16px;flex-basis:100%;min-width:0}
+.account-panel .remember-label{flex-direction:row;align-items:center;flex-basis:100%}
+#account-user,#cloud-controls{display:flex;flex-wrap:wrap;align-items:center;gap:18px;margin-top:16px}
+#account-identity{flex-basis:100%}#account-status,#cloud-status{font-size:12px;line-height:1.7}
+@media(max-width:680px){.account-panel form>label,.account-panel fieldset>label{width:100%}.account-panel input:not([type=checkbox]){width:100%}.account-panel button{white-space:normal;text-align:left}}
+
+/* Cream/plum polish: optional tools stay compact; listening stays center stage. */
+.account-panel{padding:0!important;border:1px solid var(--line);border-radius:14px;background:var(--field);margin:24px 0 12px;overflow:hidden}
+.account-summary{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 22px;cursor:pointer;list-style:none}
+.account-summary::-webkit-details-marker{display:none}.account-summary strong{display:block;font-size:14px;letter-spacing:-.2px}
+.account-caption{display:block;font-size:12px;color:var(--muted);margin-top:5px}.account-summary::after{content:'＋';font-size:20px}.account-panel[open]>.account-summary::after{content:'−'}
+.status-badge{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:7px 11px;font:10px var(--mono);margin-left:auto;text-align:center}
+.account-content{padding:4px 24px 24px;border-top:1px solid var(--line)}.account-content>p{max-width:85ch;line-height:1.75;font-size:13px}
+.account-panel form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;margin:22px 0}
+.account-panel form>label:first-child,.account-panel .remember-label,.account-panel fieldset{grid-column:1/-1}
+.account-panel input:not([type=checkbox]),.account-panel select{min-height:44px;border:1px solid var(--line);border-radius:8px;background:var(--field);padding:11px 12px;font:14px Arial,sans-serif;color:var(--ink);max-width:100%;width:100%}
+.account-panel fieldset{border-radius:10px;background:var(--paper)}.account-panel fieldset>label{flex:1 1 180px}.account-panel legend{font-size:12px;padding:0 8px}
+.account-panel input[type=checkbox]{width:18px;height:18px;flex-shrink:0}.account-panel .remember-label{line-height:1.6;align-items:flex-start}
+.account-panel .button{border-radius:8px;min-height:44px}.account-panel .text-button{min-height:44px;white-space:normal;text-align:left;font-size:12px;padding:10px 6px}
+#cloud-controls{padding:18px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.danger-zone{flex-basis:100%;font-size:12px;border-top:1px dashed var(--line);padding-top:14px;margin-top:2px}.danger-zone summary,.account-help summary{cursor:pointer;padding:8px 0;min-height:36px}
+.danger-zone p{line-height:1.6;color:var(--muted)}.danger-button{color:#893e50!important}.account-help{font-size:12px;margin-top:16px}
+#account-status:not(:empty){border-left:3px solid var(--lavender);padding:10px 14px;background:var(--surface);border-radius:0 8px 8px 0}
+#cloud-status:empty{display:none}#cloud-dirty{line-height:1.8;font-size:12px}
+.toolbar{gap:16px;flex-wrap:wrap}.toolbar>.input-card{border-radius:12px}.tabs{flex-wrap:wrap}.tab{min-height:44px}.tab.active{box-shadow:0 3px 8px #523a5617}
+.session-controls{background:var(--field);border:1px solid var(--line);border-radius:10px;padding:12px 16px;margin-top:14px;gap:10px 20px}.session-controls>.chart-note{flex-basis:100%;margin:0;font-size:11px}.session-controls .text-button{min-height:40px;display:inline-flex;align-items:center;font-size:12px}
+.history-info,.assumptions-card{border-radius:12px}.text-button:disabled,button:disabled{cursor:not-allowed}
+select:focus-visible,textarea:focus-visible{outline:2px solid var(--plum);outline-offset:4px}
+@media(max-width:680px){.account-summary{padding:16px;gap:10px;flex-wrap:wrap}.account-summary strong{font-size:13px}.account-caption{font-size:11px}.status-badge{font-size:9px;padding:6px 8px}.account-content{padding:4px 16px 18px}.account-panel form{grid-template-columns:minmax(0,1fr)}.account-panel fieldset>label{flex-basis:100%}.account-panel .button{width:100%}#cloud-controls{gap:10px}.tabs{width:100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.tab{padding:11px 9px;justify-content:center;min-width:0;font-size:11px}.source-label{line-height:1.8}.session-controls{gap:8px 18px}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,*::before,*::after{animation:none!important;transition:none!important}}

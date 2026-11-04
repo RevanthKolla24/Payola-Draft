@@ -58,3 +58,17 @@ test('invalid Apple tokens never advertise an available preview', async t => {
   const base = await start(t, { ENABLE_APPLE_PREVIEW: 'true', APPLE_MUSIC_DEVELOPER_TOKEN: 'invalid' });
   assert.deepEqual(await (await fetch(`${base}/api/integrations`)).json(), { lastfm: false, apple: false });
 });
+test('accounts are off by default and expose only public web config when explicitly enabled', async t => {
+  const base = await start(t);
+  assert.deepEqual(await (await fetch(`${base}/api/accounts`)).json(), { enabled: false });
+  for (const name of ['accounts.js', 'cloud.js', 'firebase-client.js']) assert.equal((await fetch(`${base}/${name}`)).status, 200);
+  for (const name of ['firestore.rules', 'firebase.json', 'firebase-config.js', 'firestore.indexes.json']) assert.equal((await fetch(`${base}/${name}`)).status, 404);
+  const enabled = await start(t, { ENABLE_FIREBASE_ACCOUNTS: 'true', FIREBASE_API_KEY: 'AIza' + 'a'.repeat(30), FIREBASE_APP_ID: '1:123:web:abc123' });
+  const response = await fetch(`${enabled}/api/accounts`);
+  assert.match(response.headers.get('cache-control'), /no-store/);
+  const config = await response.json();
+  assert.equal(config.enabled, true);
+  assert.equal(config.firebase.projectId, 'job-tracker-project-c4e87');
+  assert.equal((await fetch(`${enabled}/api/accounts`, { method: 'POST' })).status, 405);
+  assert.match((await fetch(enabled)).headers.get('content-security-policy'), /https:\/\/www.gstatic.com\/firebasejs\//);
+});

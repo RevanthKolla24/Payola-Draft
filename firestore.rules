@@ -1,0 +1,57 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function owner(uid) { return request.auth != null && request.auth.uid == uid; }
+    function verifiedOwner(uid) { return owner(uid) && request.auth.token.email_verified == true; }
+    function admin() {
+      return request.auth != null && request.auth.token.email_verified == true
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+    // Job Tracker compatibility: create profiles before email verification, but
+    // never allow a client to assign, alter, remove, or delete an admin role.
+    match /users/{uid} {
+      allow read: if owner(uid) || admin();
+      allow create: if owner(uid)
+        && request.resource.data.keys().hasOnly(['firstName', 'lastName', 'email', 'createdAt'])
+        && request.resource.data.firstName is string && request.resource.data.firstName.size() <= 100
+        && request.resource.data.lastName is string && request.resource.data.lastName.size() <= 100
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.createdAt == request.time;
+      allow update: if owner(uid)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['firstName', 'lastName', 'email'])
+        && request.resource.data.firstName is string && request.resource.data.firstName.size() <= 100
+        && request.resource.data.lastName is string && request.resource.data.lastName.size() <= 100
+        && request.resource.data.email == request.auth.token.email;
+      allow delete: if owner(uid) && !('role' in resource.data);
+    }
+    match /users/{uid}/jobs/{jobId} { allow read, write: if owner(uid); }
+    match /{path=**}/jobs/{jobId} { allow read: if admin(); }
+
+    // No admin exception for listening history. Bounded slots prevent arbitrary
+    // collections/documents. JSON content is validated again on client load.
+    match /payolaUsers/{uid}/state/current {
+      allow read: if verifiedOwner(uid);
+      allow create, update: if verifiedOwner(uid)
+        && request.resource.data.keys().hasOnly(['schema', 'version', 'chunks', 'bytes', 'deleted', 'updatedAt'])
+        && request.resource.data.schema == 1
+        && request.resource.data.version is int
+        && request.resource.data.version == (resource == null ? 1 : resource.data.version + 1)
+        && request.resource.data.chunks is int && request.resource.data.chunks >= 0 && request.resource.data.chunks <= 16
+        && request.resource.data.bytes is int && request.resource.data.bytes >= 0 && request.resource.data.bytes <= 4194304
+        && request.resource.data.deleted is bool
+        && (request.resource.data.deleted
+          ? request.resource.data.chunks == 0 && request.resource.data.bytes == 0
+          : request.resource.data.chunks >= 1 && request.resource.data.bytes >= 1)
+        && request.resource.data.updatedAt == request.time;
+    }
+    match /payolaUsers/{uid}/chunks/{slot} {
+      allow read: if verifiedOwner(uid) && slot.matches('^([0-9]|1[0-5])$');
+      allow create, update: if verifiedOwner(uid) && slot.matches('^([0-9]|1[0-5])$')
+        && request.resource.data.keys().hasOnly(['version', 'data'])
+        && request.resource.data.data is string && request.resource.data.data.toUtf8().size() <= 262144
+        && request.resource.data.version is int
+        && request.resource.data.version == getAfter(/databases/$(database)/documents/payolaUsers/$(uid)/state/current).data.version
+        && getAfter(/databases/$(database)/documents/payolaUsers/$(uid)/state/current).data.updatedAt == request.time;
+    }
+  }
+}

@@ -1,0 +1,52 @@
+// Run only against the demo emulator project. Never writes production data.
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
+import { createCloudStore } from '../cloud.js';
+import { sessionText } from '../session.js';
+const modules = process.env.FIREBASE_TEST_MODULES || new URL('../node_modules/', import.meta.url).pathname;
+const rulesSDK = await import(pathToFileURL(`${modules}/@firebase/rules-unit-testing/dist/esm/index.esm.js`));
+const sdk = await import(pathToFileURL(`${modules}/firebase/firestore/dist/esm/index.esm.js`));
+const { initializeTestEnvironment, assertSucceeds, assertFails } = rulesSDK;
+const environment = await initializeTestEnvironment({ projectId: 'demo-payola-shared', firestore: { rules: await readFile(new URL('../firestore.rules', import.meta.url), 'utf8') } });
+const user = (uid, verified = true) => environment.authenticatedContext(uid, { email: `${uid}@example.com`, email_verified: verified }).firestore();
+const session = sessionText({ mode: 'manual', selectedService: 'spotify', records: [], filters: { from: '', to: '' }, duplicates: 0, manual: { artist: 'Emulator Artist', plays: 12 } });
+try {
+  await environment.clearFirestore();
+  const a = user('alice'), b = user('bob'), unverified = user('new', false), anonymous = environment.unauthenticatedContext().firestore();
+  await assertSucceeds(sdk.setDoc(sdk.doc(unverified, 'users', 'new'), { firstName: 'New', lastName: 'User', email: 'new@example.com', createdAt: sdk.serverTimestamp() }));
+  await assertFails(sdk.setDoc(sdk.doc(a, 'users', 'alice'), { firstName: 'A', lastName: 'U', email: 'alice@example.com', createdAt: sdk.serverTimestamp(), role: 'admin' }));
+  await assertSucceeds(sdk.setDoc(sdk.doc(a, 'users', 'alice'), { firstName: 'A', lastName: 'U', email: 'alice@example.com', createdAt: sdk.serverTimestamp() }));
+  await assertSucceeds(sdk.updateDoc(sdk.doc(a, 'users', 'alice'), { firstName: 'Alice' }));
+  await assertFails(sdk.updateDoc(sdk.doc(a, 'users', 'alice'), { role: 'admin' }));
+  await assertFails(sdk.getDoc(sdk.doc(b, 'users', 'alice')));
+  await assertSucceeds(sdk.setDoc(sdk.doc(a, 'users', 'alice', 'jobs', 'job'), { company: 'Test', createdAt: sdk.serverTimestamp() }));
+  await assertFails(sdk.getDoc(sdk.doc(b, 'users', 'alice', 'jobs', 'job')));
+  await environment.withSecurityRulesDisabled(async context => {
+    await sdk.setDoc(sdk.doc(context.firestore(), 'users', 'boss'), { role: 'admin', firstName: 'Boss', lastName: 'User', email: 'boss@example.com' });
+  });
+  const boss = user('boss');
+  await assertSucceeds(sdk.getDocs(sdk.query(sdk.collectionGroup(boss, 'jobs'), sdk.orderBy('createdAt', 'desc'))));
+  await assertFails(sdk.updateDoc(sdk.doc(boss, 'users', 'boss'), { role: 'user' }));
+  await assertFails(sdk.updateDoc(sdk.doc(boss, 'users', 'boss'), { role: sdk.deleteField() }));
+  await assertFails(sdk.deleteDoc(sdk.doc(boss, 'users', 'boss')));
+  const store = createCloudStore(sdk, a, 'alice');
+  assert.equal(await store.save(session, 0), 1);
+  assert.equal((await store.load()).text, session);
+  await assert.rejects(store.save(session, 0), /another device/);
+  for (const db of [b, boss, anonymous]) await assertFails(sdk.getDoc(sdk.doc(db, 'payolaUsers', 'alice', 'state', 'current')));
+  await assertFails(sdk.getDoc(sdk.doc(unverified, 'payolaUsers', 'new', 'state', 'current')));
+  await assertFails(sdk.setDoc(sdk.doc(b, 'payolaUsers', 'alice', 'chunks', '0'), { version: 1, data: 'cross-user' }));
+  await assertFails(sdk.setDoc(sdk.doc(a, 'payolaUsers', 'alice', 'arbitrary', 'unbounded'), { data: 'bad' }));
+  await assertFails(sdk.updateDoc(sdk.doc(a, 'payolaUsers', 'alice', 'state', 'current'), { version: 3, updatedAt: sdk.serverTimestamp() }));
+  await assertFails(sdk.setDoc(sdk.doc(a, 'payolaUsers', 'alice', 'chunks', '16'), { version: 1, data: 'bad' }));
+  await assertFails(sdk.setDoc(sdk.doc(a, 'payolaUsers', 'alice', 'chunks', '0'), { version: 1, data: 'standalone overwrite' }));
+  assert.equal(await store.remove(1), 2);
+  await assert.rejects(store.load(), /No saved/);
+  const savedChunk = await sdk.getDoc(sdk.doc(a, 'payolaUsers', 'alice', 'chunks', '0'));
+  assert.equal(savedChunk.data().data, '');
+  const otherDevice = createCloudStore(sdk, user('alice'), 'alice');
+  assert.equal(await otherDevice.save(session, 2), 3);
+  assert.equal((await store.load()).text, session);
+  console.log('PASS: emulator rules, profiles, admin self-promotion denial, jobs, owner-only cloud snapshots, cross-device save/load/conflict/delete');
+} finally { await environment.cleanup(); }

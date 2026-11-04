@@ -10,3 +10,5 @@ node_modules/
 coverage/
 playwright-report/
 test-results/
+.firebase/
+*-debug.log
