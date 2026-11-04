@@ -295,7 +295,9 @@ $('#clear-button').addEventListener('click', () => {
 $('#input-panel').addEventListener('submit', event => {
   if (event.target.id === 'lastfm-form') { event.preventDefault(); fetchScrobbles(event.target); return; }
   if (event.target.id !== 'manual-form') return;
-  event.preventDefault(); const data = new FormData(event.target);
+  event.preventDefault();
+  if (restoring) { notify('Wait for session restore to finish.'); return; }
+  const data = new FormData(event.target);
   try { manual = manualSummary(String(data.get('artist')), Number(data.get('plays'))); manualService = selectedService; if (manualService !== 'spotify') manual.amount = null; render(); notify('Your Payola Draft is ready.'); } catch (error) { notify(error.message); }
 });
 $('#input-panel').addEventListener('click', event => {
@@ -507,6 +509,10 @@ function applySession(restored, cloud = false) {
   from = restored.filters.from; to = restored.filters.to; duplicateCount = restored.duplicates;
   lastfmAttribution = restored.attribution; lastfmLoaded = restored.lastfm;
   $('#from-date').value = from; $('#to-date').value = to;
+  if (mode === 'manual' && manual) {
+    $('#manual-form [name="artist"]').value = manual.artists[0].name;
+    $('#manual-form [name="plays"]').value = manual.plays;
+  }
   if (mode === 'lastfm') {
     $('#lastfm-form [name="from"]').value = lastfmAttribution.from;
     $('#lastfm-form [name="to"]').value = lastfmAttribution.to;

@@ -1,6 +1,10 @@
 import { createCloudStore } from './cloud.js';
 
 const $ = selector => document.querySelector(selector);
+const bounded = (promise, message, ms = 12000) => {
+  let timer;
+  return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(message)), ms); })]).finally(() => clearTimeout(timer));
+};
 const messageFor = error => {
   const messages = {
     'auth/invalid-credential': 'Email or password is incorrect.',
@@ -11,6 +15,10 @@ const messageFor = error => {
     'auth/weak-password': 'Use a stronger password. The shared project password policy also applies.',
     'auth/too-many-requests': 'Too many attempts. Please wait before trying again.',
     'auth/network-request-failed': 'Connection failed. Your local history is unchanged.',
+    'auth/unauthorized-domain': 'This website is not authorized for the shared Firebase project. Ask the owner to add this hostname in Firebase Authentication settings.',
+    'auth/operation-not-allowed': 'Email/password sign-in is disabled in the shared Firebase project. Ask the owner to enable it.',
+    'auth/api-key-not-valid.-please-pass-a-valid-api-key.': 'The Firebase web configuration is invalid. Ask the owner to check the project settings.',
+    'auth/user-disabled': 'This shared account has been disabled. Contact the project owner.',
     'permission-denied': 'Cloud access denied. Verify your email, or ask the owner to check the deployed Firebase rules.',
     'resource-exhausted': 'Cloud quota reached. Download a local session and try again later.',
     'unavailable': 'Cloud is unavailable. Your local history is unchanged.'
@@ -74,7 +82,7 @@ export function initAccounts({ capture, restore, localBusy, canSave }) {
   $('#account-connect').addEventListener('click', () => run(async () => {
     const response = await fetch('/api/accounts', { cache: 'no-store', signal: AbortSignal.timeout(8000) });
     const config = await response.json();
-    if (!response.ok || !config.enabled) throw new Error('Accounts are not enabled on this site yet. Guest mode and local downloads remain available.');
+    if (!response.ok || !config.enabled) throw new Error('Account sign-in is disabled by this deployment’s settings. The owner must remove ENABLE_FIREBASE_ACCOUNTS=false and any blank Firebase overrides on Render, then redeploy. Guest mode still works.');
     const { connectFirebase } = await import('./firebase-client.js');
     client = await connectFirebase(config.firebase);
     client.authSDK.onAuthStateChanged(client.auth, next => {
@@ -112,8 +120,8 @@ export function initAccounts({ capture, restore, localBusy, canSave }) {
         try { await sdk.updateProfile(credential.user, { displayName: `${firstName} ${lastName}` }); }
         catch { warnings.push('Your account exists, but the display name could not be saved.'); }
         try {
-          await client.dbSDK.setDoc(client.dbSDK.doc(client.db, 'users', credential.user.uid), { firstName, lastName, email, createdAt: client.dbSDK.serverTimestamp() });
-        } catch { warnings.push('The optional Job Tracker profile could not be saved. Your login exists; do not register again.'); }
+          await bounded(client.dbSDK.setDoc(client.dbSDK.doc(client.db, 'users', credential.user.uid), { firstName, lastName, email, createdAt: client.dbSDK.serverTimestamp() }), 'Profile save is taking too long.');
+        } catch { warnings.push('The optional Job Tracker profile was not confirmed saved; it may finish later. Your login exists; do not register again.'); }
         try {
           await sdk.sendEmailVerification(credential.user);
           status(`Shared account created. Verify your email using the link, then choose “I verified my email.” ${warnings.join(' ')}`);
@@ -126,7 +134,10 @@ export function initAccounts({ capture, restore, localBusy, canSave }) {
       }
       changed(client.auth.currentUser);
       $('#account-password').value = ''; $('#account-confirm').value = '';
-      if (store) await checkCloud();
+      if (store) {
+        try { await bounded(checkCloud(), 'Cloud status timed out. Check cloud status to retry.'); }
+        catch (error) { cloudStatus(messageFor(error)); status('Signed in successfully. Cloud access needs attention; your local history is unchanged.'); }
+      }
     }, $('#account-action').value === 'signup' ? 'Creating your shared account…' : 'Signing in…');
   });
   $('#account-reset').addEventListener('click', () => run(async () => {

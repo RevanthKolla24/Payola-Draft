@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { encodeCloud, decodeCloud, createCloudStore, MAX_CLOUD_BYTES, validCloudMeta } from '../cloud.js';
 import { sessionText } from '../session.js';
-import { accountConfiguration } from '../firebase-config.js';
+import { accountConfiguration, SHARED_FIREBASE_CONFIG } from '../firebase-config.js';
 const text = artist => sessionText({ mode: 'manual', selectedService: 'spotify', records: [], filters: { from: '', to: '' }, duplicates: 0, manual: { artist, plays: 10 } });
 function fakeSDK() {
   const documents = new Map();
@@ -58,9 +58,11 @@ test('account changes stop cloud work before any write', async () => {
   await assert.rejects(store.save(text('No'), 0), /Account changed/);
   assert.equal(documents.size, 0);
 });
-test('public account configuration is opt-in, bounded, and excludes unrelated secrets', () => {
-  const env = { ENABLE_FIREBASE_ACCOUNTS: 'true', FIREBASE_API_KEY: 'AIza' + 'x'.repeat(30), FIREBASE_APP_ID: '1:123:web:abc123', PRIVATE_KEY: 'secret' };
-  assert.equal(accountConfiguration({}), null);
+test('real shared web config works without placeholders; explicit off and incomplete overrides fail closed', () => {
+  const env = { ENABLE_FIREBASE_ACCOUNTS: 'true', FIREBASE_PROJECT_ID: 'job-tracker-project-c4e87', FIREBASE_AUTH_DOMAIN: 'job-tracker-project-c4e87.firebaseapp.com', FIREBASE_API_KEY: 'AIza' + 'x'.repeat(30), FIREBASE_APP_ID: '1:123:web:abc123', PRIVATE_KEY: 'secret' };
+  assert.deepEqual(accountConfiguration({}), SHARED_FIREBASE_CONFIG);
+  assert.equal(accountConfiguration({ ENABLE_FIREBASE_ACCOUNTS: 'false' }), null);
+  assert.equal(accountConfiguration({ FIREBASE_PROJECT_ID: 'other-project' }), null);
   assert.equal(accountConfiguration({ ...env, FIREBASE_API_KEY: '' }), null);
   assert.equal(accountConfiguration(env).projectId, 'job-tracker-project-c4e87');
   assert.ok(!JSON.stringify(accountConfiguration(env)).includes('secret'));

@@ -43,6 +43,8 @@ try {
     await page.locator('#accounts > summary').click();
     await page.locator('#account-connect').click();
     await page.locator('#account-email').fill('test@example.com');
+    await page.locator('#account-reset').click();
+    await page.waitForFunction(() => document.querySelector('#account-status').textContent.includes('reset email has been requested'));
     await page.locator('#account-password').fill('valid-password');
     await page.locator('#account-submit').click();
     assert.equal(await page.locator('#accounts').getAttribute('aria-busy'), 'true');

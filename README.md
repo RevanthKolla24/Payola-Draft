@@ -2,7 +2,7 @@
 
 ## Optional shared Firebase accounts
 
-Implemented locally, **disabled by default and not deployed**. Payola Draft can use the existing Job Tracker Firebase identity project, with separate owner-only listening snapshots and explicit save/load/delete. Guest workflows and local session files still work without signing in. See [the account setup, security rules, storage design, launch blockers and test instructions](./ACCOUNTS.md) before enabling anything. No rules have been published and Job Tracker has not been modified. Coordinated shared-account deletion in Job Tracker remains a launch blocker.
+Payola Draft uses the real Job Tracker Firebase identity project, with separate owner-only listening snapshots and explicit save/load/delete. The verified public web configuration is built in; no placeholder keys are needed. Firebase rules, authorized domain and browser-key referrer access were updated with owner approval on November 4, 2026, and a disposable real-project browser smoke test passed. **The candidate code still needs deployment to Render**; remove stale `ENABLE_FIREBASE_ACCOUNTS=false` and blank Firebase overrides there. Guest workflows and local session files work without signing in. See [the account setup, security rules, storage design, unresolved deletion risk and tests](./ACCOUNTS.md). Job Tracker's application has not been modified, and coordinated shared-account deletion remains unresolved.
 
 ## Local sessions and listening insights
 

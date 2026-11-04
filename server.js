@@ -78,7 +78,9 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, {
       'Content-Type': types[path.extname(name)] + (name.endsWith('.png') ? '' : '; charset=utf-8'),
       'Content-Security-Policy': `default-src 'self'; script-src 'self'${name === 'apple.html' ? ' https://js-cdn.music.apple.com' : ''}${accountConfiguration(process.env) ? ' https://www.gstatic.com/firebasejs/' : ''}; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self'${name === 'apple.html' ? ' https://*.apple.com https://*.itunes.apple.com' : ''}${accountConfiguration(process.env) ? ' https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://firestore.googleapis.com' : ''}; frame-src ${name === 'apple.html' ? 'https://*.apple.com https://*.itunes.apple.com' : "'none'"}; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`,
-      'Referrer-Policy': 'no-referrer',
+      // Firebase's browser-key restriction needs the requesting origin. Never
+      // send paths, query strings, or listening data to Google.
+      'Referrer-Policy': accountConfiguration(process.env) ? 'strict-origin' : 'no-referrer',
       'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store',
     });
     res.end(content);
