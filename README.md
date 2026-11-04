@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Payola Draft
 
 Your listening. By the numbers.
@@ -61,3 +62,7 @@ Sources:
 ## Next iterations
 
 Validate additional real-world export fixtures, add worker-based parsing for very large histories, and evaluate Apple Music formats before adding another service. User accounts and cloud persistence are intentionally outside this MVP.
+=======
+# Payola-Draft
+Check how much money you give to your favorite artist with each stream. 
+>>>>>>> 9ac38e3bb6d83a3793b022933e4d79d76692e944
