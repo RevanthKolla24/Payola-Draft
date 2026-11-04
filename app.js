@@ -2,6 +2,8 @@ import { RATE, money, number, escapeHTML as esc, summarize, manualSummary, sampl
 import { bounds, presetRange, comparePeriods, summaryCSV } from './reports.js';
 import { attribution, attributionText, SERVICES } from './attribution.js';
 import { loadLastfm } from './lastfm-client.js';
+import { sessionText, parseSession, MAX_SESSION_FILE_BYTES } from './session.js';
+import { listeningInsights } from './insights.js';
 
 const $ = selector => document.querySelector(selector);
 let mode = 'sample';
@@ -24,7 +26,34 @@ let lastfmLoaded = null;
 let lastfmAttribution = attribution();
 const scenarioActive = () => mode === 'lastfm' && lastfmAttribution.scenario;
 let rememberedUser = '';
+let integrations = null;
+let integrationCheckFailed = false;
+let restoredSession = false;
+let restoring = false;
 try { rememberedUser = localStorage.getItem('payola-lastfm-user') || ''; } catch { /* Storage is optional. */ }
+
+function renderAvailability() {
+  const lastfm = integrations?.lastfm === true;
+  const tab = $('[data-mode="lastfm"]');
+  tab.disabled = !lastfm;
+  tab.querySelector('span').textContent = lastfm ? 'Last.fm · configured' : integrations ? 'Last.fm · unavailable' : 'Last.fm · checking';
+  if (integrationCheckFailed) tab.querySelector('span').textContent = 'Last.fm · status unavailable';
+  $('#apple-preview-link').hidden = selectedService !== 'apple' || integrations?.apple !== true;
+  $('#integration-status').textContent = integrations
+    ? `Last.fm: ${lastfm ? 'configured, not a live verification' : 'not configured on this site'}. Apple preview: ${integrations.apple ? 'enabled and configured; experimental' : 'unavailable'}. Manual counts and Spotify imports work without these connections.`
+    : integrationCheckFailed ? 'Connection availability could not be checked. Reload to retry. Manual counts and Spotify imports remain available.' : 'Checking optional connections… Manual counts and Spotify imports do not require a connection.';
+  if ($('#lastfm-form')) $('#lastfm-form [type="submit"]').disabled = !lastfm || Boolean(lastfmController);
+}
+async function checkIntegrations() {
+  renderAvailability();
+  try {
+    const response = await fetch('/api/integrations', { cache: 'no-store', signal: AbortSignal.timeout(8000) });
+    const data = await response.json();
+    if (!response.ok || typeof data.lastfm !== 'boolean' || typeof data.apple !== 'boolean') throw new Error();
+    integrations = data;
+  } catch { integrationCheckFailed = true; }
+  renderAvailability();
+}
 
 function notify(message) {
   $('#status').textContent = message; $('#status').hidden = false;
@@ -70,6 +99,7 @@ function render() {
   renderSourceLabels();
   renderAttribution();
   renderHistoryInfo();
+  $('#save-session').disabled = busy || Boolean(lastfmController) || restoring || mode === 'routes' || (mode === 'manual' ? !manual : !records.length);
 }
 function renderHistoryInfo() {
   const last = mode === 'lastfm', counts = mode === 'manual', routes = mode === 'routes';
@@ -87,6 +117,8 @@ function renderHistoryInfo() {
   $('#history-details').innerHTML = details.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join('');
   $('#history-audit').textContent = routes ? 'Choose a supported route above to begin. No history is loaded.' : $('#audit').textContent;
   $('#history-warning').textContent = routes ? 'Selecting a streaming service does not declare or verify the source of any listening history.' : counts ? 'Counts are self-reported. No duration, date coverage, or stream eligibility checks are possible.' : last ? 'Only previously scrobbled activity is available. Completeness and service attribution are not verified. Filters do not change the original declaration period; comparisons outside it have no service confirmation or established coverage.' : mode === 'sample' ? 'Fictional demonstration data, not your listening history.' : 'File coverage is not guaranteed complete. Missing dates do not prove zero listening; qualifying playback duration does not verify royalties.';
+  if (restoredSession) $('#history-warning').textContent += ' Restored from a user-editable local session; source and declarations are not authenticated. Any saved Last.fm dollar scenario was disabled; opt in again using the control below. Original import hashes/byte accounting were not restored; start a new import view to add files.';
+  $('#restore-scenario').hidden = !restoredSession || mode !== 'lastfm' || !lastfmAttribution.confirmed || lastfmAttribution.service !== 'spotify' || scenarioActive();
 }
 function renderAttribution() {
   if (mode === 'routes') {
@@ -178,6 +210,9 @@ function renderSourceLabels() {
   }
 }
 function renderInsights() {
+  const insight = listeningInsights(result);
+  $('#artist-concentration').textContent = insight.concentration === null ? 'Add listening to see artist concentration.' : `Your top ${insight.artistCount} artist${insight.artistCount === 1 ? '' : 's'} account for ${insight.concentration.toFixed(1)}% of ${mode === 'manual' ? 'your self-reported counts' : mode === 'lastfm' ? 'recorded scrobbles in this view' : 'included plays in this view'}. This is personal listening share, not royalty-pool share.`;
+  $('#top-tracks').innerHTML = mode === 'manual' ? '<p class="chart-note">Track details are unavailable from manual artist counts.</p>' : insight.tracks.length ? `<ol class="top-track-list">${insight.tracks.map(t => `<li><span>${esc(t.title)}<small>${esc(t.artist)}</small></span><strong>${number(t.plays)} ${mode === 'lastfm' ? 'scrobbles' : 'plays'}</strong></li>`).join('')}</ol><p class="chart-note">Top 10 artist/title pairs for the displayed period. Titles are not matched across versions or services.</p>` : '<p class="chart-note">No tracks in the displayed period.</p>';
   const months = result.months || [];
   const hours = mode !== 'lastfm' && $('#monthly-metric').value === 'hours';
   const value = m => hours ? m.ms / 3600000 : m.plays;
@@ -200,6 +235,8 @@ function renderRows() {
 }
 function setMode(next) {
   if (next === 'import' && selectedService !== 'spotify') return;
+  if (next === 'lastfm' && integrations?.lastfm !== true && !restoring) { notify('Last.fm is unavailable on this site. Choose manual counts or a supported file import.'); return; }
+  restoredSession = false;
   lastfmController?.abort(); lastfmController = null; lastfmLoaded = null; lastfmAttribution = attribution();
   stopImport();
   manualService = selectedService;
@@ -251,6 +288,7 @@ async function fetchScrobbles(form) {
   try {
     const loaded = await loadLastfm({ user, from: start, to: end, signal: controller.signal, progress: (message, value) => { status.textContent = message; progress.value = value; } });
     if (lastfmController !== controller) return;
+    restoredSession = false;
     records = loaded.records; from = start; to = end; lastfmLoaded = loaded; lastfmAttribution = { ...selectedAttribution, from: start, to: end };
     $('#from-date').value = start; $('#to-date').value = end;
     if ($('#remember-lastfm').checked) { rememberedUser = user; try { localStorage.setItem('payola-lastfm-user', user); } catch { notify('Could not save the username on this device.'); } }
@@ -282,6 +320,7 @@ function stopImport() {
 }
 function importFiles(files) {
   if (!files.length || busy) return;
+  if (restoredSession) { notify('Start a new Import history view before adding files. Restored sessions do not retain original import hashes or byte accounting.'); return; }
   if (!window.Worker) { notify('This browser does not support background imports. Try a modern browser.'); return; }
   const feedback = $('#import-feedback'), input = $('#history-files');
   const cancel = document.createElement('button'); cancel.id = 'cancel-import'; cancel.className = 'text-button'; cancel.textContent = 'Cancel import';
@@ -329,7 +368,7 @@ function renderComparison() {
 }
 $('#export-csv').addEventListener('click', () => {
   const range = bounds(records);
-  const csv = summaryCSV(result, { source: mode === 'lastfm' ? 'Last.fm recorded scrobbles' : mode === 'sample' ? 'Fictional sample' : mode === 'manual' ? `Self-reported ${SERVICES[manualService]}` : 'Local Spotify import', from: mode === 'manual' ? '' : from || range.from, to: mode === 'manual' ? '' : to || range.to, duplicates: duplicateCount, attribution: mode === 'lastfm' ? lastfmAttribution : null });
+  const csv = summaryCSV(result, { source: (mode === 'lastfm' ? 'Last.fm recorded scrobbles' : mode === 'sample' ? 'Fictional sample' : mode === 'manual' ? `Self-reported ${SERVICES[manualService]}` : 'Local Spotify import') + (restoredSession ? ' · restored user-editable session; provenance not authenticated' : ''), from: mode === 'manual' ? '' : from || range.from, to: mode === 'manual' ? '' : to || range.to, duplicates: duplicateCount, attribution: mode === 'lastfm' ? lastfmAttribution : null });
   const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
   const link = document.createElement('a'); link.href = url; link.download = `payola-draft-summary-${mode}.csv`; link.click();
   setTimeout(() => URL.revokeObjectURL(url), 10000); notify('CSV downloaded with artist totals, source, dates, exclusions, and benchmark assumptions.');
@@ -364,6 +403,7 @@ $('#artist-rows').addEventListener('click', event => {
     $('#artist-card-style option[value=value]').remove();
   }
   $('#artist-dialog').showModal();
+  if (restoredSession) $('#artist-detail').insertAdjacentHTML('beforeend', '<p class="chart-note">Restored user-editable session; provenance and declarations are not authenticated.</p>');
 });
 $('#close-dialog').addEventListener('click', () => $('#artist-dialog').close());
 $('#artist-dialog').addEventListener('click', event => { if (event.target === $('#artist-dialog')) { const r = event.target.getBoundingClientRect(); if (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom) event.target.close(); } });
@@ -382,6 +422,7 @@ function downloadCard(artist = null, style = 'value') {
   const text = (value, x, y, font = '24px monospace', color = '#344a34') => { ctx.fillStyle = color; ctx.font = font; ctx.fillText(value, x, y, 730); };
   const line = y => { ctx.strokeStyle = '#bbc5ae'; ctx.setLineDash([7, 7]); ctx.beginPath(); ctx.moveTo(135, y); ctx.lineTo(865, y); ctx.stroke(); };
   text('YOUR PAYOLA DRAFT', 135, 135, '22px monospace');
+  if (restoredSession) text('RESTORED SESSION · PROVENANCE NOT AUTHENTICATED', 135, 170, '15px Arial');
   text(artist ? 'Your artist.' : 'Good music.', 135, 242, '72px Georgia'); text(artist ? artist.name : 'Real impact.', 135, 322, artist ? '54px Georgia' : '72px Georgia'); line(365);
   text(mode === 'lastfm' ? 'LAST.FM · RECORDED SCROBBLES' : mode === 'sample' ? 'SPOTIFY · FICTIONAL SAMPLE' : mode === 'manual' ? `${SERVICES[manualService]} · SELF-REPORTED PLAYS` : 'SPOTIFY · IMPORTED HISTORY', 135, 415, '19px monospace');
   text(coverage(), 135, 453, '18px monospace');
@@ -408,7 +449,55 @@ function downloadCard(artist = null, style = 'value') {
     const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = artist ? `payola-draft-artist-${style}-${source}.png` : `payola-draft-${source}.png`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 10000); notify('Payola Draft downloaded. It includes the visible highlights, not your raw history.');
   }, 'image/png');
 }
+$('#save-session').addEventListener('click', () => {
+  if (busy || lastfmController || restoring) { notify('Wait for pending work before saving a session.'); return; }
+  try {
+    const output = sessionText({ mode, selectedService: mode === 'sample' ? 'spotify' : selectedService, records, filters: { from, to }, duplicates: duplicateCount,
+      attribution: mode === 'lastfm' ? lastfmAttribution : null,
+      lastfm: mode === 'lastfm' ? { skipped: lastfmLoaded?.skipped || 0, duplicates: lastfmLoaded?.duplicates || 0 } : null,
+      manual: mode === 'manual' && manual ? { artist: manual.artists[0].name, plays: manual.plays } : null });
+    if (!window.confirm('This session file contains listening history, artist/track names and dates. Keep it private. It is downloaded locally, not uploaded. Continue?')) return;
+    const url = URL.createObjectURL(new Blob([output], { type: 'application/json' }));
+    const link = document.createElement('a'); link.href = url; link.download = 'payola-draft-session.json'; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    notify('Session downloaded. Keep it private; it contains listening history.');
+  } catch (error) { notify(error.message); }
+});
+$('#restore-session').addEventListener('change', async event => {
+  const file = event.target.files[0]; event.target.value = '';
+  if (!file || restoring) return;
+  if (busy || lastfmController) { notify('Finish or cancel pending work before restoring.'); return; }
+  restoring = true;
+  try {
+    if (file.size > MAX_SESSION_FILE_BYTES) throw new Error('Session exceeds the 25 MB restore limit.');
+    const restored = parseSession(await file.text());
+    if (busy || lastfmController) throw new Error('Finish or cancel pending work before restoring.');
+    if (!window.confirm('Replace this view with the local session? Session files are user-editable, not verified history. Saved Last.fm dollar scenarios are disabled until you opt in again.')) return;
+    selectedService = restored.selectedService; $('#service-picker').value = selectedService;
+    $('[data-mode="import"]').hidden = selectedService !== 'spotify';
+    setMode(restored.mode);
+    records = restored.records; manual = restored.manual; manualService = selectedService;
+    from = restored.filters.from; to = restored.filters.to; duplicateCount = restored.duplicates;
+    lastfmAttribution = restored.attribution; lastfmLoaded = restored.lastfm;
+    $('#from-date').value = from; $('#to-date').value = to;
+    if (mode === 'lastfm') {
+      $('#lastfm-form [name="from"]').value = lastfmAttribution.from;
+      $('#lastfm-form [name="to"]').value = lastfmAttribution.to;
+      $('#lastfm-status').textContent = 'Restored local history. No username or live connection was restored. Refresh replaces it only after a successful request.';
+    }
+    restoredSession = true;
+    renderAvailability();
+    notify('Local session restored. History and attribution are user-editable and unverified.');
+  } catch (error) { notify(`${error.message} Previous results are unchanged.`); }
+  finally { restoring = false; render(); }
+});
+$('#restore-scenario').addEventListener('click', () => {
+  if (!restoredSession || mode !== 'lastfm' || lastfmAttribution.service !== 'spotify' || !lastfmAttribution.confirmed) return;
+  if (!window.confirm('Use the saved self-reported Spotify declaration for a hypothetical $0.003/scrobble scenario? The session is user-editable; this does not verify service, eligibility or earnings.')) return;
+  lastfmAttribution = { ...lastfmAttribution, scenario: true }; render();
+});
 render();
+checkIntegrations();
 $('#service-picker').addEventListener('change', () => {
   const nextService = $('#service-picker').value;
   if ((mode !== 'sample' && (records.length || manual || lastfmLoaded || importedNames.size)) || busy || lastfmController) {
@@ -419,7 +508,7 @@ $('#service-picker').addEventListener('change', () => {
   }
   selectedService = nextService;
   document.querySelector('[data-mode="import"]').hidden = selectedService !== 'spotify';
-  $('#apple-preview-link').hidden = selectedService !== 'apple';
+  renderAvailability();
   $('#service-help').textContent = 'Last.fm recommended if you already scrobble—not required. Manual counts are also available. ' + (selectedService === 'spotify' ? 'Spotify JSON/ZIP imports are supported.' : 'No history importer or validated royalty benchmark for this service.');
   setMode('routes');
 });

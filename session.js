@@ -1,0 +1,61 @@
+import { manualSummary, RATE } from './lib.js';
+import { attribution } from './attribution.js';
+
+export const MAX_SESSION_FILE_BYTES = 25 * 1024 * 1024;
+const MAX_RECORDS = 200000;
+const fail = () => { throw new Error('Invalid or unsupported Payola Draft session.'); };
+const date = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
+const count = value => Number.isSafeInteger(value) && value >= 0 && value <= MAX_RECORDS * 100;
+const text = (value, max) => typeof value === 'string' && value.length <= max;
+
+// Reconstruct only known fields. Session data is untrusted, never executable or verified.
+export function validateSession(input) {
+  if (!input || input.format !== 'payola-draft-session' || input.version !== 1 || !['sample', 'import', 'lastfm', 'manual'].includes(input.mode)) fail();
+  if (input.benchmark?.usdPerPlay !== RATE || input.benchmark?.year !== 2024 || input.benchmark?.source !== 'Duetti Spotify sample') fail();
+  if (!['spotify', 'apple', 'youtube'].includes(input.selectedService)) fail();
+  const filters = input.filters;
+  if (!filters || !['from', 'to'].every(key => filters[key] === '' || date(filters[key])) || (filters.from && filters.to && filters.from > filters.to)) fail();
+  if (!Array.isArray(input.records) || input.records.length > MAX_RECORDS || !count(input.duplicates)) fail();
+  const mode = input.mode;
+  if ((mode === 'import' || mode === 'sample') && input.selectedService !== 'spotify') fail();
+  const records = input.records.map(r => {
+    if (!r || typeof r !== 'object') fail();
+    if (r.invalid === true && mode !== 'lastfm') return { invalid: true };
+    if (!r.supported && mode !== 'lastfm') r = { ...r, artist: r.artist ?? '', track: r.track ?? '' };
+    if (!date(r.date) || !text(r.artist, 500) || !text(r.track, 1000) || typeof r.supported !== 'boolean') fail();
+    if (r.supported && (!r.artist.trim() || !r.track.trim())) fail();
+    if (r.eventKey !== undefined && !text(r.eventKey, 8192)) fail();
+    if (mode === 'lastfm' ? r.source !== 'lastfm' || r.ms !== null || !r.supported : r.source !== undefined || typeof r.ms !== 'number' || !Number.isFinite(r.ms) || r.ms < 0 || r.ms > 86400000) fail();
+    return { date: r.date, artist: r.artist, track: r.track, supported: r.supported, ms: r.ms, ...(mode === 'lastfm' ? { source: 'lastfm' } : {}), ...(r.eventKey ? { eventKey: r.eventKey } : {}) };
+  });
+  let declaration = attribution(), loaded = null, manual = null;
+  if (mode === 'lastfm') {
+    const a = input.attribution;
+    if (!a || typeof a.confirmed !== 'boolean' || typeof a.scenario !== 'boolean' || !date(a.from) || !date(a.to) || a.from > a.to) fail();
+    declaration = { ...attribution(a.service, a.confirmed, false), from: a.from, to: a.to };
+    if (records.some(r => r.date < a.from || r.date > a.to)) fail();
+    if (!input.lastfm || !count(input.lastfm.skipped) || !count(input.lastfm.duplicates)) fail();
+    loaded = { skipped: input.lastfm.skipped, duplicates: input.lastfm.duplicates };
+  }
+  if (mode === 'manual') {
+    if (records.length || filters.from || filters.to || !input.manual || !text(input.manual.artist, 100)) fail();
+    manual = manualSummary(input.manual.artist, input.manual.plays);
+    if (input.selectedService !== 'spotify') manual.amount = null;
+  }
+  return { mode, selectedService: input.selectedService, records, filters: { from: filters.from, to: filters.to }, duplicates: input.duplicates, attribution: declaration, lastfm: loaded, manual };
+}
+
+export function sessionText(state) {
+  const data = { format: 'payola-draft-session', version: 1, benchmark: { source: 'Duetti Spotify sample', year: 2024, usdPerPlay: RATE }, ...state };
+  validateSession(data);
+  const output = JSON.stringify(data);
+  if (new TextEncoder().encode(output).byteLength > MAX_SESSION_FILE_BYTES) throw new Error('Session exceeds the 25 MB download/restore limit. Use CSV for a summary instead.');
+  return output;
+}
+
+export function parseSession(text) {
+  if (new TextEncoder().encode(text).byteLength > MAX_SESSION_FILE_BYTES) throw new Error('Session exceeds the 25 MB restore limit.');
+  let data;
+  try { data = JSON.parse(text); } catch { throw new Error('Session is not valid JSON.'); }
+  return validateSession(data);
+}

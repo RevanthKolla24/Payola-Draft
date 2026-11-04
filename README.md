@@ -1,5 +1,15 @@
 # Service selection and self-reported attribution
 
+## Local sessions and listening insights
+
+Download session creates a versioned JSON file with normalized records, selected dates, source labels, duplicate audit counts, manual counts and Last.fm declarations. It contains private listening history: keep it private. It excludes saved usernames, API credentials, original file names and original file contents. This is explicit local download/restore, not cloud or automatic browser storage.
+
+Restore validates format/version, benchmark metadata, dates, source consistency and metadata bounds before asking to replace results. Limits are 25 MB and 200,000 records. Rejected files preserve current results. Restored provenance is user-editable, not authenticated, and is disclosed in the history panel, CSV and PNG. Last.fm duration remains unknown; dollar scenarios are disabled until a fresh explicit opt-in. A successful live refresh replaces restored provenance.
+
+Restored Spotify sessions are read-only: original file hashes and imported-JSON byte accounting are not preserved. Start a new Import history view to add original files. Large sessions may exceed 25 MB; CSV remains available for summaries. Parsing/validation is local on the main thread and may briefly pause the UI near the limit; session parsing does not yet use a cancellable worker.
+
+Top tracks shows ten artist/title pairs for the displayed period, without cross-service or version matching. Last.fm uses scrobble labels. Manual artist counts never invent tracks. Artist concentration is the top five (or fewer) artists' share of included plays, recorded scrobbles or self-reported counts—not platform royalty-pool share. No discovery dates or actual earnings are inferred.
+
 Choose Spotify, Apple Music, or YouTube Music before choosing a route. Last.fm is recommended for existing scrobblers, never required. Manual counts remain available for all three services; local JSON/ZIP imports are Spotify-only. The separate Apple Music preview shows resources, not playback counts. No YouTube history connector is provided.
 
 Last.fm cannot verify the original streaming service or actual duration. The Last.fm form defaults to mixed/unknown service; choosing an onboarding service shows supported routes without declaring history attribution. A single-service declaration requires confirmation that **all scrobbles in the requested period** came from that service. The declaration is self-reported, not verified, and is committed only with a successful load. Changing the requested range or declared service resets confirmation; changing form controls does not relabel previously loaded history. Filters only narrow the loaded history; comparisons do not establish coverage beyond it.
@@ -10,13 +20,13 @@ Only explicitly confirmed Spotify histories can opt into a hypothetical scenario
 
 ## Apple Music connection proof of concept
 
-Select **Apple Music preview** in the source bar, or open `/apple.html`. This experimental page is intentionally separate from the royalty dashboard. It authorizes through MusicKit on the Web and requests `/v1/me/recent/played/tracks` directly from Apple, with explicit next-page loading capped at ten pages. It displays recent resource metadata only: no inferred play counts, timestamps, actual duration, period statistics, or royalties. Catalog track duration is deliberately discarded. There is no claim of full listening history or continuous synchronization.
+Choose Apple Music and select **Experimental Apple Music preview** when it is enabled/configured, or open `/apple.html` (connection remains disabled unless enabled by the owner). This experimental page is intentionally separate from the royalty dashboard. It authorizes through MusicKit on the Web and requests `/v1/me/recent/played/tracks` directly from Apple, with explicit next-page loading capped at ten pages. It displays recent resource metadata only: no inferred play counts, timestamps, actual duration, period statistics, or royalties. Catalog track duration is deliberately discarded. There is no claim of full listening history or continuous synchronization.
 
 Owner setup:
 
 1. Configure MusicKit through your Apple Developer account and generate a signed developer token with a MusicKit-enabled key.
 2. Keep the private signing key outside the project. Never place it in client code or commit it.
-3. Start the server with `APPLE_MUSIC_DEVELOPER_TOKEN=your_signed_token npm start` (combine with `LASTFM_API_KEY` if using both).
+3. Start the server with `ENABLE_APPLE_PREVIEW=true APPLE_MUSIC_DEVELOPER_TOKEN=your_signed_token npm start` (combine with `LASTFM_API_KEY` if using both).
 4. Open the preview, prepare the connection, then authorize through Apple. Use HTTPS in deployment and review Apple account eligibility and platform terms.
 
 The configuration endpoint checks token structure, ES256 metadata and expiration; it does not verify the signature. Apple does that. The signed developer token is intentionally exposed to the browser SDK; it is not the private signing key. The Music User Token is held in app memory and sent directly to Apple, never through the app server. Apple SDK authorization may use its own storage/cookies. Disconnect calls MusicKit unauthorize and clears the displayed list and in-memory token; account-level revocation remains under Apple's controls.
@@ -124,3 +134,11 @@ Remember username is opt-in local storage; Forget saved username removes it. Cle
 ## History context and service switching
 
 The About this history panel shows source, service attribution, original Last.fm request/declaration period, observed record dates, displayed dates, duration availability, valuation method and audit warnings. Filtering does not extend or rewrite a declaration. Choosing a service displays supported acquisition routes without automatically opening Last.fm. Switching services asks for confirmation before clearing loaded personal data or cancelling in-progress work. Cancelling leaves the previous selection and history unchanged.
+
+## Private-beta deployment readiness
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for the Render Web Service settings, environment variables, health checks, proxy/logging caveats, beta checklist and rollback procedure. Production binds to `0.0.0.0` by default; local development binds to `127.0.0.1`. Override with `HOST` and `PORT`.
+
+`/healthz` reports process liveness without checking upstream services. `/api/integrations` reports only configuration booleans, never credentials. The dashboard disables Last.fm when unavailable and hides the Apple preview link unless explicitly enabled and configured. Configuration presence is not live integration verification. Apple now requires `ENABLE_APPLE_PREVIEW=true` as well as a structurally valid, unexpired developer token. Keep it disabled for the initial beta.
+
+`.env.example` documents optional local settings; copy it to `.env` and use `node --env-file=.env server.js` if desired. `npm start` does not load local environment files automatically. Real keys and private signing files must never be committed. `.node-version` pins the deployment/CI runtime; the GitHub Actions workflow runs unit/server tests and syntax checks, not browser tests or deployment.
