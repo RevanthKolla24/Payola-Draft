@@ -6,5 +6,6 @@ export function attribution(service = 'unknown', confirmed = false, scenario = f
 }
 export function attributionText(value) {
   if (!value || value.service === 'unknown') return 'Mixed / unknown services · unpriced';
-  return `${value.label} · service self-reported${value.scenario ? ' · hypothetical benchmark scenario' : ' · unpriced'}`;
+  const period = value.from && value.to ? ` for ${value.from} – ${value.to} UTC` : '';
+  return `${value.label} · service self-reported${period}${value.scenario ? ' · hypothetical benchmark scenario' : ' · unpriced'}`;
 }

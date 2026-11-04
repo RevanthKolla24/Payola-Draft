@@ -40,6 +40,7 @@ function coverage() {
 }
 function render() {
   result = mode === 'manual' ? manual || { plays: 0, amount: 0, ms: null, artists: [], audit: null } : summarize(records, { from, to });
+  if (mode === 'lastfm') { result.ms = null; result.amount = null; }
   $('#stat-plays').textContent = number(result.plays);
   $('#stat-hours').innerHTML = result.ms === null ? '—' : `${number(Math.round(result.ms / 3600000))} <em>hrs</em>`;
   $('#hours-note').textContent = result.ms === null ? 'Not available from manual counts' : 'With your favorite recordings';
@@ -53,7 +54,7 @@ function render() {
   $('#source-label').textContent = mode === 'sample' ? 'FICTIONAL DATA · REAL MATH' : mode === 'manual' ? 'YOUR COUNTS · HISTORICAL BENCHMARK' : 'ON YOUR DEVICE · NEVER UPLOADED';
   $('#receipt-kicker').textContent = mode === 'sample' ? 'THE SAMPLE COLLECTION' : mode === 'manual' ? 'YOUR OWN ROTATION' : 'YOUR PRIVATE COLLECTION';
   $('#data-note').textContent = mode === 'sample' ? "You're exploring fictional listening data. Import your history to make it yours." : mode === 'manual' ? 'Self-reported counts are not verified streams. The estimate does not account for track eligibility.' : `History stays in this tab. ${number(duplicateCount)} matching playback occurrences skipped across files. Coverage reflects these files; completeness is not verified.`;
-  $('#note-import').hidden = mode === 'import';
+  $('#note-import').hidden = mode === 'import' || selectedService !== 'spotify' || mode === 'routes';
   $('#share-button').disabled = result.plays === 0;
   $('#audit').textContent = result.audit ? `Included: ${number(result.audit.included)} · Short plays: ${number(result.audit.short)} · Unsupported: ${number(result.audit.unsupported)} · Invalid: ${number(result.audit.invalid)} · Outside selected dates: ${number(result.audit.outside)}. Invalid records cannot be assigned to a date range.` : 'Manual mode: all entered plays are self-reported. No duration or eligibility checks are possible.';
   $('#calculation-formula').textContent = `${number(result.plays)} included plays × $0.003 = ${money(result.amount)} USD`;
@@ -68,14 +69,47 @@ function render() {
   renderRows();
   renderSourceLabels();
   renderAttribution();
+  renderHistoryInfo();
+}
+function renderHistoryInfo() {
+  const last = mode === 'lastfm', counts = mode === 'manual', routes = mode === 'routes';
+  const observed = bounds(records);
+  const period = (start, end) => start && end ? `${start} – ${end} UTC` : 'No dated records loaded';
+  const details = [
+    ['Source', routes ? 'No route selected' : last ? 'Last.fm recorded scrobbles' : counts ? 'Manual, self-reported counts' : mode === 'sample' ? 'Fictional Spotify sample' : 'Local Spotify JSON/ZIP import'],
+    ['Service attribution', routes ? 'Not declared' : last ? lastfmLoaded ? attributionText(lastfmAttribution) : 'Not declared; load history first' : counts ? `${SERVICES[manualService]} · self-reported, not verified` : 'Spotify export format; paid-stream eligibility not verified'],
+    ['Original request / declaration period', last && lastfmLoaded ? period(lastfmAttribution.from, lastfmAttribution.to) : 'Not applicable'],
+    ['Observed record dates', counts ? 'Unavailable from manual counts' : period(observed.from, observed.to)],
+    ['Displayed period', counts ? 'No date range' : routes ? 'No history loaded' : coverage()],
+    ['Duration', last || counts ? 'Unavailable; never inferred' : routes ? 'No history loaded' : 'Reported playback duration for included records'],
+    ['Valuation', routes ? 'None' : scenarioActive() ? 'Optional hypothetical Spotify scenario · Duetti 2024 sample, $0.003/scrobble; not verified earnings' : last || (counts && manualService !== 'spotify') ? 'Unpriced · no royalty estimate' : 'Historical Spotify benchmark · Duetti 2024 sample, $0.003/play; not verified earnings'],
+  ];
+  $('#history-details').innerHTML = details.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join('');
+  $('#history-audit').textContent = routes ? 'Choose a supported route above to begin. No history is loaded.' : $('#audit').textContent;
+  $('#history-warning').textContent = routes ? 'Selecting a streaming service does not declare or verify the source of any listening history.' : counts ? 'Counts are self-reported. No duration, date coverage, or stream eligibility checks are possible.' : last ? 'Only previously scrobbled activity is available. Completeness and service attribution are not verified. Filters do not change the original declaration period; comparisons outside it have no service confirmation or established coverage.' : mode === 'sample' ? 'Fictional demonstration data, not your listening history.' : 'File coverage is not guaranteed complete. Missing dates do not prove zero listening; qualifying playback duration does not verify royalties.';
 }
 function renderAttribution() {
+  if (mode === 'routes') {
+    $('#source-label').textContent = 'CHOOSE A LISTENING SOURCE';
+    $('#receipt .receipt-source > span:first-child').textContent = SERVICES[selectedService];
+    $('#receipt-type').textContent = 'NO HISTORY LOADED';
+    $('#receipt .receipt-amount-label').textContent = 'Choose a supported route to begin';
+    $('#receipt-total').textContent = '—';
+    $('#receipt .currency-label').textContent = 'NO ROYALTY ESTIMATE';
+    $('#receipt .receipt-disclaimer').textContent = 'No history loaded. Service selection does not confirm the source of any listening.';
+    $('#receipt').querySelectorAll('.receipt-line').forEach((line, index) => { if (index) line.hidden = true; });
+    $('.assumptions-card').hidden = true;
+    $('#data-note').textContent = 'Choose Last.fm, manual counts, or a supported file import above. Histories from different sources are never merged.';
+    return;
+  }
   if (mode === 'manual' && manualService !== 'spotify') {
     $('#receipt .receipt-source > span:first-child').textContent = SERVICES[manualService];
     $('#receipt .receipt-amount-label').textContent = 'Self-reported plays · no royalty estimate';
     $('#receipt-total').textContent = number(result.plays);
     $('#receipt .currency-label').textContent = 'SELF-REPORTED · UNPRICED';
     $('#source-label').textContent = `${SERVICES[manualService]} · SELF-REPORTED COUNTS`;
+    $('#data-note').textContent = 'Self-reported counts are not verified streams. No validated benchmark for this service; no royalty estimate.';
+    $('.amount-head').textContent = 'UNPRICED';
     $('#receipt .receipt-disclaimer').textContent = 'No validated benchmark for this service. Counts, duration and eligibility unverified.';
     $('#receipt').querySelectorAll('.receipt-line').forEach((line, index) => { if (index) line.hidden = true; });
     $('.assumptions-card').hidden = true;
@@ -117,7 +151,7 @@ $('#input-panel').addEventListener('change', event => {
 function renderSourceLabels() {
   const last = mode === 'lastfm';
   $('#stat-plays').previousElementSibling.innerHTML = last ? 'RECORDED SCROBBLES' : 'PLAYS INCLUDED <span aria-hidden="true">↗</span>';
-  $('#stat-plays').nextElementSibling.textContent = last ? 'Dated Last.fm records; not verified streams' : 'Music plays of 30+ seconds';
+  $('#stat-plays').nextElementSibling.textContent = last ? 'Dated Last.fm records; not verified streams' : mode === 'manual' ? 'Self-reported counts; duration and eligibility unknown' : 'Music plays of 30+ seconds';
   $('#receipt .receipt-source > span:first-child').textContent = last ? 'LAST.FM' : 'SPOTIFY';
   $('#receipt .receipt-amount-label').textContent = last ? 'Recorded scrobbles · no dollar estimate' : 'Estimated recording royalties';
   $('#receipt-total').textContent = last ? number(result.plays) : money(result.amount);
@@ -165,6 +199,7 @@ function renderRows() {
   }
 }
 function setMode(next) {
+  if (next === 'import' && selectedService !== 'spotify') return;
   lastfmController?.abort(); lastfmController = null; lastfmLoaded = null; lastfmAttribution = attribution();
   stopImport();
   manualService = selectedService;
@@ -177,7 +212,8 @@ function setMode(next) {
   records = next === 'sample' ? sampleRecords() : []; manual = null; importedNames.clear(); occurrences.clear(); duplicateCount = 0; sessionBytes = 0;
   document.querySelectorAll('.tab').forEach(tab => tab.classList.toggle('active', tab.dataset.mode === next));
   const panel = $('#input-panel'); panel.hidden = next === 'sample';
-  if (next === 'manual') panel.innerHTML = `<section class="input-card"><h3>Put a number on your repeat button.</h3><p>No files needed. Enter an artist and your ${SERVICES[selectedService]} play count. Counts are self-reported; non-Spotify counts are unpriced.</p><form id="manual-form"><label>Artist name<input name="artist" placeholder="Your favorite artist" required maxlength="100"></label><label>${SERVICES[selectedService]} plays<input name="plays" type="number" min="1" max="10000000" step="1" placeholder="e.g. 500" required></label><button class="button" type="submit">Make my receipt ↗</button></form></section>`;
+  if (next === 'routes') panel.innerHTML = `<section class="input-card"><h3>Choose how to add your ${SERVICES[selectedService]} listening.</h3><p>Use the routes above. Last.fm is recommended only if you already scrobble; it is not required. Manual counts are always available.${selectedService === 'spotify' ? ' Spotify JSON/ZIP imports are also supported.' : ' No file-history importer or validated royalty benchmark is available for this service.'}${selectedService === 'apple' ? ' The optional Apple Music preview shows recent resources, not play counts.' : ''}</p></section>`;
+  else if (next === 'manual') panel.innerHTML = `<section class="input-card"><h3>Put a number on your repeat button.</h3><p>No files needed. Enter an artist and your ${SERVICES[selectedService]} play count. Counts are self-reported; non-Spotify counts are unpriced.</p><form id="manual-form"><label>Artist name<input name="artist" placeholder="Your favorite artist" required maxlength="100"></label><label>${SERVICES[selectedService]} plays<input name="plays" type="number" min="1" max="10000000" step="1" placeholder="e.g. 500" required></label><button class="button" type="submit">Make my receipt ↗</button></form></section>`;
   else if (next === 'import') panel.innerHTML = `<section class="input-card"><h3>Bring your history. Keep it private.</h3><ol class="import-steps"><li><strong>Request your history</strong><p>In <a href="https://www.spotify.com/account/privacy/" target="_blank" rel="noreferrer">Spotify privacy settings ↗</a>, request Extended Streaming History, not the standard account-history package.</p></li><li><strong>Download your export</strong><p>When it is ready, save the ZIP archive. Already unzipped? Choose audio-history JSON files instead.</p></li><li><strong>Open it here</strong><p>We read the files on your device. No account connection or upload required.</p></li></ol><label class="file-zone" id="drop-zone">↥ &nbsp; Drop a ZIP or JSON files here, or choose files<input id="history-files" type="file" accept=".zip,.json,application/json,application/zip" multiple><small>100 MB input / expanded JSON per selection. Session cap: 100 MB imported JSON and 200,000 retained records. Cancel discards the entire pending selection. Unsupported ZIPs can be unzipped first.</small></label><progress id="import-progress" max="1" value="0" aria-label="Import progress" hidden></progress><div id="import-feedback" class="import-feedback" role="status" aria-live="polite"></div><section id="import-summary" hidden></section></section>`;
   else if (next === 'lastfm') {
     $('#monthly-metric').value = 'plays';
@@ -191,7 +227,7 @@ document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', (
 $('#note-import').addEventListener('click', () => setMode('import'));
 $('#artist-search').addEventListener('input', renderRows);
 $('#monthly-metric').addEventListener('change', renderInsights);
-$('#clear-button').addEventListener('click', () => { setMode(mode === 'lastfm' ? 'lastfm' : 'import'); notify('Listening data cleared from this tab. Saved usernames can be removed with “Forget saved username”.'); });
+$('#clear-button').addEventListener('click', () => { setMode(mode === 'lastfm' ? 'lastfm' : selectedService === 'spotify' ? 'import' : 'routes'); notify('Listening data cleared from this tab. Saved usernames can be removed with “Forget saved username”.'); });
 $('#input-panel').addEventListener('submit', event => {
   if (event.target.id === 'lastfm-form') { event.preventDefault(); fetchScrobbles(event.target); return; }
   if (event.target.id !== 'manual-form') return;
@@ -215,7 +251,7 @@ async function fetchScrobbles(form) {
   try {
     const loaded = await loadLastfm({ user, from: start, to: end, signal: controller.signal, progress: (message, value) => { status.textContent = message; progress.value = value; } });
     if (lastfmController !== controller) return;
-    records = loaded.records; from = start; to = end; lastfmLoaded = loaded; lastfmAttribution = selectedAttribution;
+    records = loaded.records; from = start; to = end; lastfmLoaded = loaded; lastfmAttribution = { ...selectedAttribution, from: start, to: end };
     $('#from-date').value = start; $('#to-date').value = end;
     if ($('#remember-lastfm').checked) { rememberedUser = user; try { localStorage.setItem('payola-lastfm-user', user); } catch { notify('Could not save the username on this device.'); } }
     else { rememberedUser = ''; try { localStorage.removeItem('payola-lastfm-user'); } catch {} }
@@ -349,7 +385,10 @@ function downloadCard(artist = null, style = 'value') {
   text(artist ? 'Your artist.' : 'Good music.', 135, 242, '72px Georgia'); text(artist ? artist.name : 'Real impact.', 135, 322, artist ? '54px Georgia' : '72px Georgia'); line(365);
   text(mode === 'lastfm' ? 'LAST.FM · RECORDED SCROBBLES' : mode === 'sample' ? 'SPOTIFY · FICTIONAL SAMPLE' : mode === 'manual' ? `${SERVICES[manualService]} · SELF-REPORTED PLAYS` : 'SPOTIFY · IMPORTED HISTORY', 135, 415, '19px monospace');
   text(coverage(), 135, 453, '18px monospace');
-  if (mode === 'lastfm') text(attributionText(lastfmAttribution), 135, 487, '16px Arial');
+  if (mode === 'lastfm') {
+    text(lastfmAttribution.confirmed ? `${lastfmAttribution.label} · self-reported${scenarioActive() ? ' · hypothetical scenario' : ' · unpriced'}` : 'Mixed / unknown services · unpriced', 135, 482, '16px Arial');
+    if (lastfmLoaded) text(`Original request / declaration: ${lastfmAttribution.from} – ${lastfmAttribution.to} UTC`, 135, 505, '15px Arial');
+  }
   text(valueCard ? (mode === 'lastfm' ? 'Hypothetical benchmark scenario' : 'Estimated recording royalties') : mode === 'lastfm' ? 'Recorded scrobbles' : 'Included plays on repeat', 135, 525, '24px Arial');
   text(valueCard ? money(plays * RATE) : number(plays), 135, 642, '108px Arial');
   text(valueCard ? `${number(plays)} ${mode === 'lastfm' ? 'SCROBBLES' : 'PLAYS'} · USD · $3 / 1,000` : `${artist?.ms == null ? (mode === 'lastfm' ? 'DURATION UNKNOWN' : 'SELF-REPORTED') : `${(artist.ms / 3600000).toFixed(1)} HOURS`} · LISTENING CARD`, 135, 700, '21px monospace'); line(745);
@@ -371,10 +410,16 @@ function downloadCard(artist = null, style = 'value') {
 }
 render();
 $('#service-picker').addEventListener('change', () => {
-  selectedService = $('#service-picker').value;
+  const nextService = $('#service-picker').value;
+  if ((mode !== 'sample' && (records.length || manual || lastfmLoaded || importedNames.size)) || busy || lastfmController) {
+    if (!window.confirm('Switch streaming service? This clears the loaded history and cancels any pending request or import. Download a CSV first if you want to keep the current summary.')) {
+      $('#service-picker').value = selectedService;
+      return;
+    }
+  }
+  selectedService = nextService;
   document.querySelector('[data-mode="import"]').hidden = selectedService !== 'spotify';
   $('#apple-preview-link').hidden = selectedService !== 'apple';
   $('#service-help').textContent = 'Last.fm recommended if you already scrobble—not required. Manual counts are also available. ' + (selectedService === 'spotify' ? 'Spotify JSON/ZIP imports are supported.' : 'No history importer or validated royalty benchmark for this service.');
-  setMode('lastfm');
-  $('#lastfm-service').value = selectedService;
+  setMode('routes');
 });

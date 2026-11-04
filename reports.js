@@ -50,9 +50,9 @@ export function summaryCSV(summary, { source, from = '', to = '', duplicates = 0
   const header = ['row_type', 'artist', 'included_plays', 'listening_hours', 'personal_listening_share_percent', 'estimated_recording_royalties_usd', 'source', 'from_utc', 'to_utc', 'benchmark', 'benchmark_year', 'usd_per_play', 'short_excluded', 'unsupported_excluded', 'invalid_records_all_dates', 'outside_dates', 'duplicates_removed_all_dates', 'assumptions'];
   if (scrobbles) header[2] = 'recorded_scrobbles';
   if (scenario) header[5] = 'hypothetical_spotify_benchmark_scenario_usd';
-  header.push('reported_service', 'service_attribution');
+  header.push('reported_service', 'service_attribution', 'original_request_from_utc', 'original_request_to_utc');
   const priced = !unpriced || scenario;
   const row = (kind, a) => [kind, a.name, a.plays, a.ms === null ? '' : (a.ms / 3600000).toFixed(4), summary.plays ? (a.plays / summary.plays * 100).toFixed(4) : '0', priced ? (a.plays * RATE).toFixed(6) : '', source, from, to, priced ? 'Duetti Spotify sample' : '', priced ? 2024 : '', priced ? RATE : '',
-    ...['short', 'unsupported', 'invalid', 'outside'].map(key => kind === 'TOTAL' ? summary.audit?.[key] ?? '' : ''), kind === 'TOTAL' ? duplicates : '', assumptions, attribution?.service || '', attribution ? (attribution.confirmed ? 'self-reported, not verified' : 'mixed / unknown') : ''];
+    ...['short', 'unsupported', 'invalid', 'outside'].map(key => kind === 'TOTAL' ? summary.audit?.[key] ?? '' : ''), kind === 'TOTAL' ? duplicates : '', assumptions, attribution?.service || '', attribution ? (attribution.confirmed ? 'self-reported, not verified' : 'mixed / unknown') : '', attribution?.from || '', attribution?.to || ''];
   return '\ufeff' + [header, row('TOTAL', { name: 'All artists', plays: summary.plays, ms: summary.ms }), ...summary.artists.map(a => row('ARTIST', a))].map(r => r.map(csvCell).join(',')).join('\r\n');
 }

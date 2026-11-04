@@ -13,6 +13,7 @@ try {
   await page.goto(base);
   assert.match(await page.title(), /Payola Draft/);
   assert.equal(await page.locator('#stat-plays').textContent(), '2,727');
+  assert.match(await page.locator('#history-details').textContent(), /Fictional Spotify sample/);
   await page.locator('[data-preset="month"]').click();
   assert.equal(await page.locator('#from-date').inputValue(), '2026-10-01');
   await page.locator('#compare-toggle').check();
@@ -74,6 +75,8 @@ try {
   await page.locator('#remember-lastfm').check();
   await page.locator('#lastfm-form [type="submit"]').click();
   await page.waitForFunction(() => document.querySelector('#lastfm-status').textContent.includes('Loaded 2 scrobbles'));
+  assert.match(await page.locator('#history-details').textContent(), /2026-01-01 – 2026-02-28 UTC/);
+  assert.match(await page.locator('#history-details').textContent(), /Unavailable; never inferred/);
   assert.equal(await page.locator('#stat-hours').textContent(), '—');
   assert.equal(await page.locator('#receipt-total').textContent(), '2');
   assert.equal(await page.locator('#artist-rows tr td:last-child').textContent(), '—');
@@ -93,6 +96,10 @@ try {
   assert.equal(await page.locator('#receipt-total').textContent(), '2');
   await page.locator('#lastfm-form [type="submit"]').click();
   await page.waitForFunction(() => document.querySelector('#receipt-total').textContent === '$0.01');
+  await page.locator('[data-preset="month"]').click();
+  assert.match(await page.locator('#history-details').textContent(), /self-reported for 2026-01-01 – 2026-02-28 UTC/);
+  assert.match(await page.locator('#history-details').textContent(), /2026-02-01/);
+  await page.locator('[data-preset="all"]').click();
   assert.match(await page.locator('#receipt .receipt-amount-label').textContent(), /Hypothetical/);
   await page.locator('#artist-search').fill('Scrobble');
   assert.equal(await page.locator('#artist-rows tr td:last-child').textContent(), '$0.01');
@@ -126,9 +133,13 @@ try {
   assert.deepEqual(errors, []);
   console.log('PASS: Last.fm pagination, scrobble-only labels, absent duration and royalties, CSV, artist card restrictions, refresh failure preservation, cancel, remember/forget, 4 widths, Spotify regression.');
   for (const service of ['apple', 'youtube']) {
+    if (service === 'youtube') page.once('dialog', dialog => dialog.accept());
     await page.locator('#service-picker').selectOption(service);
     assert.equal(await page.locator('[data-mode="import"]').isVisible(), false);
-    assert.equal(await page.locator('#lastfm-service').inputValue(), service);
+    assert.equal(await page.locator('#lastfm-form').count(), 0);
+    assert.match(await page.locator('#history-details').textContent(), /No route selected/);
+    await page.locator('[data-mode="lastfm"]').click();
+    assert.equal(await page.locator('#lastfm-service').inputValue(), 'unknown');
     assert.equal(await page.locator('#lastfm-confirm').isChecked(), false);
     await page.locator('[data-mode="manual"]').click();
     await page.locator('[name="artist"]').fill('Manual Artist');
@@ -136,14 +147,26 @@ try {
     await page.locator('#manual-form button').click();
     assert.equal(await page.locator('#receipt-total').textContent(), '1,000');
     assert.equal(await page.locator('#artist-rows tr td:last-child').textContent(), '—');
+    assert.match(await page.locator('#history-details').textContent(), /Unpriced · no royalty estimate/);
+    assert.doesNotMatch(await page.locator('#data-note').textContent(), /The estimate/);
+    assert.match(await page.locator('#stat-plays').locator('..').textContent(), /Self-reported counts; duration and eligibility unknown/);
     pending = page.waitForEvent('download'); await page.locator('#export-csv').click();
     assert.doesNotMatch(await readFile(await (await pending).path(), 'utf8'), /Duetti Spotify sample/);
     await page.locator('.artist-button').first().click();
     assert.equal(await page.locator('#artist-card-style option').count(), 1);
     await page.keyboard.press('Escape');
   }
+  page.once('dialog', dialog => dialog.dismiss());
+  await page.locator('#service-picker').selectOption('spotify');
+  assert.equal(await page.locator('#service-picker').inputValue(), 'youtube');
+  assert.equal(await page.locator('#receipt-total').textContent(), '1,000');
+  await page.locator('#clear-button').click();
+  assert.equal(await page.locator('#stat-plays').textContent(), '0');
+  assert.match(await page.locator('#history-details').textContent(), /No route selected/);
   await page.locator('#service-picker').selectOption('spotify');
   assert.equal(await page.locator('[data-mode="import"]').isVisible(), true);
+  assert.equal(await page.locator('#lastfm-form').count(), 0);
+  assert.match(await page.locator('#history-details').textContent(), /No route selected/);
   console.log('PASS: service-first routes, separate Last.fm declaration, non-Spotify manual counts and unpriced exports.');
   await page.goto(`${base}/apple.html`);
   assert.match(await page.title(), /Apple Music preview/);
