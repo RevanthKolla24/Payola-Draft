@@ -12,12 +12,13 @@ export async function connectFirebase() {
   const dbSDK = {
     doc: (_, ...path) => path.join('/'), serverTimestamp: () => Date.now(),
     setDoc: async () => { throw new Error('Simulated profile failure'); },
-    getDocFromServer: async path => { if (window.testReadDelay) await new Promise(resolve => setTimeout(resolve, window.testReadDelay)); const data = JSON.parse(localStorage.getItem('cloud:' + path) || 'null'); return { exists: () => data !== null, data: () => data }; },
+    getDocFromServer: async path => { if (window.testReadDelay) await new Promise(resolve => setTimeout(resolve, window.testReadDelay)); if (window.testReadFailure) throw new Error('Simulated status failure'); const data = JSON.parse(localStorage.getItem('cloud:' + path) || 'null'); return { exists: () => data !== null, data: () => data }; },
     runTransaction: async (_, fn) => {
       if (window.testWriteFailure) throw new Error('Simulated lost response');
       if (window.testWriteDelay) await new Promise(resolve => setTimeout(resolve, window.testWriteDelay));
       const pending = [];
       const result = await fn({ get: dbSDK.getDocFromServer, set: (path, data) => pending.push([path, data]) });
+      if (window.testProfileFailure && pending.some(([path]) => path.startsWith('users/'))) throw new Error('Simulated profile failure');
       for (const [path, data] of pending) localStorage.setItem('cloud:' + path, JSON.stringify(data));
       return result;
     }
@@ -26,7 +27,7 @@ export async function connectFirebase() {
     browserLocalPersistence: {}, inMemoryPersistence: {}, setPersistence: async () => {},
     onAuthStateChanged: (_, cb) => { callback = cb; cb(auth.currentUser); },
     signInWithEmailAndPassword: async () => { await new Promise(resolve => setTimeout(resolve, 100)); auth.currentUser = user; callback(user); return { user }; },
-    createUserWithEmailAndPassword: async () => { user.emailVerified = false; auth.currentUser = user; callback(user); return { user }; },
+    createUserWithEmailAndPassword: async () => { window.testProfileFailure = true; user.emailVerified = false; auth.currentUser = user; callback(user); return { user }; },
     updateProfile: async () => {},
     signOut: async () => { auth.currentUser = null; callback(null); },
     reload: async target => { target.emailVerified = true; }, getIdToken: async () => 'verified',
@@ -60,6 +61,31 @@ try {
     await page.waitForFunction(() => !document.querySelector('#cloud-save').disabled);
   }
   await signIn(first);
+  // A failed refresh must discard previously acknowledged write/delete versions.
+  await first.evaluate(() => { window.testReadFailure = true; });
+  await first.locator('#cloud-check').click();
+  await first.waitForFunction(() => document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
+  assert.equal(await first.locator('#cloud-save').isDisabled(), true);
+  assert.equal(await first.locator('#cloud-delete').isDisabled(), true);
+  await first.evaluate(() => { window.testReadFailure = false; });
+  await first.locator('#cloud-check').click();
+  await first.waitForFunction(() => !document.querySelector('#cloud-save').disabled);
+  assert.equal(await first.locator('#account-profile-form').isVisible(), true);
+  await first.locator('#profile-first').fill('Repair'); await first.locator('#profile-last').fill('User');
+  await first.locator('#account-profile-form [type="submit"]').click();
+  await first.waitForFunction(() => document.querySelector('#account-profile-status').textContent.includes('created'));
+  assert.deepEqual(await first.evaluate(() => {
+    const { createdAt, ...profile } = JSON.parse(localStorage.getItem('cloud:users/test-user')); return profile;
+  }), { firstName: 'Repair', lastName: 'User', email: 'test@example.com' });
+  await first.locator('#account-profile-check').click();
+  await first.waitForFunction(() => document.querySelector('#account-profile-status').textContent.includes('exists'));
+  assert.equal(await first.locator('#account-profile-form').isVisible(), false);
+  await first.evaluate(() => { window.testReadFailure = true; });
+  await first.locator('#account-profile-check').click();
+  await first.waitForFunction(() => document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
+  assert.match(await first.locator('#account-profile-status').textContent(), /could not be checked/);
+  assert.equal(await first.locator('#account-profile-form').isVisible(), false);
+  await first.evaluate(() => { window.testReadFailure = false; });
   assert.match(await first.locator('#cloud-status').textContent(), /No saved/);
   assert.equal(await first.locator('#stat-plays').textContent(), '2,727');
   first.once('dialog', dialog => dialog.dismiss()); await first.locator('#cloud-save').click();
@@ -85,8 +111,15 @@ try {
   await second.locator('#manual-form [name="artist"]').fill('Cross-device Artist');
   await second.locator('#manual-form [name="plays"]').fill('500');
   await second.locator('#manual-form button').click();
+  assert.equal(await second.locator('#unsaved-history').isVisible(), true);
+  assert.equal(await second.evaluate(() => !window.dispatchEvent(new Event('beforeunload', { cancelable: true }))), true);
+  await second.locator('#artist-search').fill('Cross');
+  assert.equal(await second.locator('#unsaved-history').isVisible(), true);
+  const csvDownload = second.waitForEvent('download'); await second.locator('#export-csv').click(); await csvDownload;
+  assert.equal(await second.locator('#unsaved-history').isVisible(), true, 'CSV is not a complete session backup');
   second.once('dialog', dialog => dialog.accept()); await second.locator('#cloud-save').click();
   await second.waitForFunction(() => document.querySelector('#cloud-status').textContent.includes('version 2'));
+  assert.equal(await second.locator('#unsaved-history').isVisible(), false);
   first.once('dialog', dialog => dialog.accept()); await first.locator('#cloud-save').click();
   await first.waitForFunction(() => document.querySelector('#account-status').textContent.includes('another device'));
   assert.equal(await first.locator('#cloud-conflict').isVisible(), true);
@@ -101,6 +134,7 @@ try {
   assert.match(await first.locator('#history-warning').textContent(), /cloud snapshot/);
   assert.match(await first.locator('#history-details').textContent(), /Cloud snapshot/);
   assert.equal(await first.locator('#manual-form [name="plays"]').inputValue(), '500');
+  assert.equal(await first.locator('#unsaved-history').isVisible(), false, 'Cloud load is backed by a confirmed snapshot');
   await first.locator('.danger-zone > summary').click();
   first.once('dialog', dialog => dialog.accept()); await first.locator('#cloud-delete').click();
   await first.waitForFunction(() => document.querySelector('#cloud-status').textContent.includes('deleted'));
@@ -129,6 +163,7 @@ try {
   assert.match(await remembered.locator('#account-badge').textContent(), /Signed in/);
   await first.evaluate(() => localStorage.removeItem('test:remembered'));
   // Registration warning survives the later verification-success message.
+  await first.evaluate(() => localStorage.removeItem('cloud:users/test-user'));
   const signup = await context.newPage(); await signup.goto(base);
   await signup.locator('#accounts > summary').click(); await signup.locator('#account-connect').click();
   await signup.locator('#account-action').selectOption('signup');
@@ -141,6 +176,14 @@ try {
   assert.match(await signup.locator('#account-status').textContent(), /Verify your email/);
   assert.equal(await signup.locator('#account-password').inputValue(), '');
   assert.equal(await signup.locator('#account-verify').isVisible(), true);
+  assert.equal(await signup.locator('#account-profile-form').isVisible(), true);
+  await signup.evaluate(() => { window.testProfileFailure = false; });
+  await signup.locator('#profile-first').fill('New'); await signup.locator('#profile-last').fill('User');
+  // Another tab finishing setup must never be overwritten, even if it has a role.
+  await signup.evaluate(() => localStorage.setItem('cloud:users/test-user', JSON.stringify({ firstName: 'Existing', role: 'admin' })));
+  await signup.locator('#account-profile-form [type="submit"]').click();
+  await signup.waitForFunction(() => document.querySelector('#account-profile-status').textContent.includes('Nothing was overwritten'));
+  assert.equal(await signup.evaluate(() => JSON.parse(localStorage.getItem('cloud:users/test-user')).role), 'admin');
   await signup.locator('#account-refresh').click();
   await signup.waitForFunction(() => document.querySelector('#cloud-controls').hidden === false && document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
   assert.match(await signup.locator('#account-badge').textContent(), /Signed in/);
@@ -162,6 +205,13 @@ try {
   await second.locator('#cloud-check').click();
   await second.waitForFunction(() => document.querySelector('#account-status').textContent.includes('damaged'));
   assert.equal(await second.locator('#cloud-save').isDisabled(), true);
+  await second.evaluate(() => { window.testReadFailure = true; });
+  await second.locator('#cloud-check').click();
+  await second.waitForFunction(() => document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
+  assert.equal(await second.locator('#cloud-delete').isDisabled(), true, 'Failed checks invalidate prior recovery metadata');
+  await second.evaluate(() => { window.testReadFailure = false; });
+  await second.locator('#cloud-check').click();
+  await second.waitForFunction(() => document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
   await second.locator('.danger-zone > summary').click();
   second.once('dialog', dialog => dialog.accept()); await second.locator('#cloud-delete').click();
   await second.waitForFunction(() => document.querySelector('#cloud-status').textContent.includes('deleted'));
@@ -196,6 +246,14 @@ try {
   await remembered.waitForFunction(() => document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
   assert.match(await remembered.locator('#cloud-dirty').textContent(), /not saved/);
   assert.equal(await remembered.locator('#stat-plays').textContent(), '99');
+  assert.equal(await remembered.locator('#unsaved-history').isVisible(), true);
+  remembered.once('dialog', dialog => dialog.dismiss()); await remembered.locator('#save-session').click();
+  assert.equal(await remembered.locator('#unsaved-history').isVisible(), true);
+  const downloaded = remembered.waitForEvent('download');
+  remembered.once('dialog', dialog => dialog.accept()); await remembered.locator('#save-session').click();
+  await downloaded;
+  assert.equal(await remembered.locator('#unsaved-history').isVisible(), false);
+  assert.equal(await remembered.evaluate(() => !window.dispatchEvent(new Event('beforeunload', { cancelable: true }))), false);
   // An auth change during a read must never restore the previous account's view.
   await remembered.evaluate(() => { window.testReadDelay = 500; });
   await remembered.locator('#cloud-load').click();
@@ -203,6 +261,12 @@ try {
   await remembered.waitForFunction(() => document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
   assert.equal(await remembered.locator('#cloud-controls').isVisible(), false);
   assert.equal(await remembered.locator('#stat-plays').textContent(), '99');
+  await signup.evaluate(() => { window.testReadDelay = 400; });
+  await signup.locator('#account-profile-check').click();
+  await signup.evaluate(() => window.testAuthChange(null));
+  await signup.waitForFunction(() => document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
+  assert.equal(await signup.locator('#account-profile-status').textContent(), '');
+  assert.equal(await signup.locator('#account-profile-form').isVisible(), false);
   for (const width of [320, 390, 768, 1440]) {
     await second.setViewportSize({ width, height: 1000 });
     assert.ok(await second.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), `Overflow at ${width}`);
@@ -210,5 +274,5 @@ try {
     assert.ok(await remembered.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), `Remembered layout overflow at ${width}`);
   }
   assert.deepEqual(errors, []);
-  console.log('PASS: guest isolation, sign-in/reset/verification refresh, password toggles, explicit/remembered sign-in, cancelled/rejected restores, restore busy state and labels, empty save prevention, save/load/delete, conflict controls, damaged metadata recovery, delayed single-flight writes, local edits and auth changes during cloud work, partial registration warning, sign-out retention/clearing and four responsive widths (mocked Firebase adapter).');
+  console.log('PASS: guest isolation, account/profile repair, concurrent-profile preservation, stale auth results, failed status/recovery invalidation, unsaved reminders, unload guards, downloads/CSV distinction, cloud races/conflicts and responsive layouts (mocked Firebase adapter).');
 } finally { await browser.close(); }

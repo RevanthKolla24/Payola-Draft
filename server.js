@@ -9,7 +9,7 @@ import { accountConfiguration } from './firebase-config.js';
 const root = fileURLToPath(new URL('.', import.meta.url));
 const publicFiles = new Set(['index.html', 'styles.css', 'app.js', 'lib.js', 'importer.js', 'reports.js', 'import-job.js', 'import-worker.js', 'lastfm-client.js', 'apple.html', 'apple-client.js', 'apple.js', 'attribution.js', 'session.js', 'insights.js']);
 for (const name of ['logo', 'favicon-32', 'favicon-192', 'apple-touch-icon']) publicFiles.add(`assets/${name}.png`);
-for (const name of ['accounts.js', 'cloud.js', 'firebase-client.js']) publicFiles.add(name);
+for (const name of ['accounts.js', 'cloud.js', 'firebase-client.js', 'profile.js', 'preservation.js']) publicFiles.add(name);
 const allowGlobal = createLimiter({ limit: 120 });
 const clients = new Map(); let activeRequests = 0;
 function integrationStatus() {

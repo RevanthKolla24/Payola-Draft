@@ -6,6 +6,8 @@ Payola Draft uses the real Job Tracker Firebase identity project, with separate 
 
 ## Local sessions and listening insights
 
+Real, nonempty history displays an unsaved reminder until a session download is requested or its current view is confirmed saved/loaded in cloud. Refresh/close warnings are best-effort, not guaranteed recovery. Browsers cannot confirm a download was kept; CSV and PNG exports are not complete-session backups. Edits made during a cloud save remain unsaved. Missing shared profiles can be completed through **Finish account setup**, without replacing an existing profile or role.
+
 Download session creates a versioned JSON file with normalized records, selected dates, source labels, duplicate audit counts, manual counts and Last.fm declarations. It contains private listening history: keep it private. It excludes saved usernames, API credentials, original file names and original file contents. This is explicit local download/restore, not cloud or automatic browser storage.
 
 Restore validates format/version, benchmark metadata, dates, source consistency and metadata bounds before asking to replace results. Limits are 25 MB and 200,000 records. Rejected files preserve current results. Restored provenance is user-editable, not authenticated, and is disclosed in the history panel, CSV and PNG. Last.fm duration remains unknown; dollar scenarios are disabled until a fresh explicit opt-in. A successful live refresh replaces restored provenance.

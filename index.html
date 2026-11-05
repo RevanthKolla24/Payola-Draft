@@ -41,6 +41,14 @@
     <button class="text-button" id="account-refresh">I verified my email</button>
     <button class="text-button" id="account-signout">Sign out of Payola Draft</button>
     <label class="remember-label"><input type="checkbox" id="account-clear-signout"> Also clear listening history and saved Last.fm username from this tab/device when signing out (cloud history and jobs stay unchanged)</label>
+    <button class="text-button" id="account-profile-check">Check shared profile setup</button>
+    <p id="account-profile-status" class="chart-note" role="status"></p>
+    <form id="account-profile-form" hidden>
+      <p>Your login exists, but its shared profile is missing. Finish setup here; do not register again. Existing profiles and roles are never replaced.</p>
+      <label>First name<input id="profile-first" autocomplete="given-name" maxlength="100" required></label>
+      <label>Last name<input id="profile-last" autocomplete="family-name" maxlength="100" required></label>
+      <button class="button" type="submit">Finish account setup</button>
+    </form>
   </div>
   <div id="cloud-controls" hidden>
     <p class="chart-note" id="cloud-size">One cloud snapshot · 4 MiB maximum. Larger histories can use local session downloads (25 MB maximum).</p>
@@ -58,6 +66,7 @@
 <section id="dashboard" aria-label="Listening dashboard">
       <div class="toolbar"><section class="input-card" aria-label="Choose your streaming service"><label>Where do you listen?<select id="service-picker"><option value="spotify">Spotify</option><option value="apple">Apple Music</option><option value="youtube">YouTube Music</option></select></label><p id="service-help">Last.fm is recommended if you already scrobble. It is optional; manual counts and Spotify file imports remain available.</p><a id="apple-preview-link" href="/apple.html" hidden>Experimental Apple Music preview · recent resources, not play counts ↗</a></section><div class="tabs" role="group" aria-label="Listening source"><button class="tab active" data-mode="sample">◉ <span>Sample receipt</span></button><button class="tab" data-mode="import">↥ <span>Import history</span></button><button class="tab" data-mode="manual">＋ <span>Enter plays</span></button><button class="tab" data-mode="lastfm" disabled>♫ <span>Last.fm · checking</span></button></div><span class="source-label" id="source-label">FICTIONAL DATA · REAL MATH</span></div>
       <p id="integration-status" class="chart-note" role="status" aria-live="polite">Checking optional connections…</p>
+      <p id="unsaved-history" class="chart-note" role="status" hidden>Your current history has no recorded session download or confirmed cloud save. Download a session or save to cloud before leaving. Close warnings are best-effort; a download request does not confirm the file was kept. CSV and images are not full backups.</p>
       <section class="session-controls" aria-label="Local session files"><button class="text-button" id="save-session">Download session ↓</button><label class="text-button">Restore session<input id="restore-session" type="file" accept=".json,application/json"></label><p class="chart-note">Session files contain listening history. Keep them private. Local download/restore only · 25 MB / 200,000 records maximum.</p><button class="text-button" id="restore-scenario" hidden>Opt into restored Spotify benchmark scenario</button></section>
       <div id="input-panel" hidden></div>
       <section class="history-info" aria-labelledby="history-heading"><h3 id="history-heading">About this history</h3><dl id="history-details"></dl><p id="history-warning"></p><p id="history-audit"></p></section>

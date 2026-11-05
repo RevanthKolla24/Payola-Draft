@@ -12,6 +12,14 @@ Real-project browser smoke testing passed with a disposable identity: registrati
 
 ## Behavior and boundaries
 
+### Profile recovery and history-loss protection
+
+After sign-in, remembered connection, registration or verification refresh, Payola checks whether the shared `users/{uid}` profile exists. Failed checks offer an explicit retry without claiming the profile is missing. Missing profiles show a first/last-name form. **Finish account setup** uses a create-only transaction: an existing or concurrently created profile is never updated, including any roles. Names are bounded to 100 characters; UID/email come from the signed-in identity. Account changes discard pending results. This does not repair incomplete fields in an existing profile or grant any role. No rules changes are needed.
+
+A separate session-backup tracker shows a persistent reminder and attaches a best-effort refresh/close warning only for real, nonempty history without a recorded current-session download or confirmed cloud save/load. Cosmetic controls, CSVs and images do not count as complete backups. Cancelled downloads/restores and rejected operations do not clear the reminder. Edits made during a cloud save remain unsaved. Local restores are conservatively treated as a new view to back up, since validation may normalize content and disable saved scenarios. A download request cannot confirm that the browser/user retained the file, and browsers may suppress close warnings. Clearing/signing out of the cloud account invalidates its backup acknowledgement; independent session-download acknowledgement remains.
+
+Every new cloud-status check immediately clears the previous write version and recovery acknowledgement. A failed network/permission check leaves Save/Delete disabled until a successful check. Only a freshly inspected, recoverable metadata error enables the explicit damaged-snapshot reset path.
+
 Guest mode is unchanged. The account SDK is loaded only after **Sign in or create an account**. Firebase web SDK 13.2.0 is pinned, with Auth and Firestore only (no analytics or Cloud Storage). Email/password identities use the existing `job-tracker-project-c4e87` project, so a verified identity works in either app. Each origin signs in separately. The optional Remember checkbox persists only the account sign-in, not listening history. Signing out keeps the local view by default. An explicit checkbox and confirmation can also clear the view and remembered Last.fm username; this does not delete cloud history, jobs, downloaded files or the shared account.
 
 Password visibility controls are available for both password fields. Verification refresh reloads the identity and refreshes its token before checking cloud access. Local import, Last.fm and restore busy-state changes immediately refresh cloud controls. Restored history identifies local-session versus cloud-snapshot restoration independently of the declared listening source.

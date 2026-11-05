@@ -1,4 +1,5 @@
 import { createCloudStore } from './cloud.js';
+import { createProfileStore } from './profile.js';
 
 const $ = selector => document.querySelector(selector);
 const bounded = (promise, message, ms = 12000) => {
@@ -26,12 +27,13 @@ const messageFor = error => {
   return messages[error.code] || error.message || 'Account operation failed. Local history is unchanged.';
 };
 
-export function initAccounts({ capture, restore, localBusy, canSave, clearLocal }) {
+export function initAccounts({ capture, restore, localBusy, canSave, clearLocal, preservation }) {
   let client, user = null, store, working = false, epoch = 0, cloudVersion = null;
   let localRevision = 0, savedRevision = -1;
   let identity = null;
   let recovery = null;
   let authIdentity = '';
+  let profileStore, profileMissing = false;
   const status = text => { $('#account-status').textContent = text; };
   const cloudStatus = text => { $('#cloud-status').textContent = text; };
   const currentUID = () => user?.uid;
@@ -47,6 +49,8 @@ export function initAccounts({ capture, restore, localBusy, canSave, clearLocal 
     $('#account-identity').textContent = user ? `${user.email} · ${user.emailVerified ? 'verified shared account' : 'email verification required'}` : '';
     document.querySelectorAll('#accounts button').forEach(button => { button.disabled = working; });
     document.querySelectorAll('#account-form input, #account-form select').forEach(input => { input.disabled = working; });
+    document.querySelectorAll('#account-profile-form input').forEach(input => { input.disabled = working; });
+    $('#account-profile-form').hidden = !user || !profileMissing;
     $('#cloud-save').disabled = working || localBusy() || !canSave() || !user?.emailVerified || cloudVersion === null;
     $('#cloud-load').disabled = working || localBusy() || !user?.emailVerified;
     $('#cloud-delete').disabled = working || !user?.emailVerified || (cloudVersion === null && !recovery);
@@ -88,10 +92,13 @@ export function initAccounts({ capture, restore, localBusy, canSave, clearLocal 
   async function checkCloud() {
     if (!store) return;
     const target = store, versionEpoch = epoch;
+    cloudVersion = null; recovery = null;
+    render();
     let meta;
     try { meta = await target.status(); } catch (error) {
       if (versionEpoch !== epoch) return;
       if (error.code === 'cloud/metadata') { cloudVersion = null; recovery = error.recovery; }
+      cloudStatus(messageFor(error));
       throw error;
     }
     if (versionEpoch !== epoch) return;
@@ -99,12 +106,47 @@ export function initAccounts({ capture, restore, localBusy, canSave, clearLocal 
     recovery = null;
     cloudStatus(meta && !meta.deleted ? `Cloud snapshot available · version ${meta.version} · ${(meta.bytes / 1048576).toFixed(2)} MiB. Load to view, or Save to explicitly replace it.` : 'No saved Payola history. Your jobs are separate and unchanged.');
   }
+  async function checkProfile() {
+    if (!profileStore) return;
+    const target = profileStore, versionEpoch = epoch;
+    profileMissing = false;
+    $('#account-profile-status').textContent = 'Checking shared profile setup…'; render();
+    try {
+      const exists = await target.exists();
+      if (versionEpoch !== epoch) return;
+      profileMissing = !exists;
+      $('#account-profile-status').textContent = exists ? 'Shared profile exists. Existing names and roles were not changed.' : 'Shared profile is missing. Your login works; finish setup below.';
+    } catch (error) {
+      if (versionEpoch !== epoch) return;
+      $('#account-profile-status').textContent = `Profile setup could not be checked. Use Check shared profile setup to retry. ${messageFor(error)}`;
+    }
+    render();
+  }
+  $('#account-profile-check').addEventListener('click', () => run(checkProfile, 'Checking shared profile setup…'));
+  $('#account-profile-form').addEventListener('submit', event => {
+    event.preventDefault();
+    run(async () => {
+      if (!profileStore || !profileMissing) throw new Error('Check shared profile setup first.');
+      const target = profileStore, versionEpoch = epoch;
+      const created = await target.finish($('#profile-first').value, $('#profile-last').value);
+      if (versionEpoch !== epoch) return;
+      profileMissing = false;
+      $('#profile-first').value = ''; $('#profile-last').value = '';
+      $('#account-profile-status').textContent = created ? 'Shared profile created. Account setup is complete.' : 'A shared profile already exists. Nothing was overwritten; setup is complete.';
+      status('Shared profile setup complete. Your login and local history are unchanged.');
+    }, 'Finishing account setup…');
+  });
   function changed(next) {
     authIdentity = `${next?.uid || ''}:${Boolean(next?.emailVerified)}`;
     epoch++; user = next; cloudVersion = null; savedRevision = -1; recovery = null;
+    preservation.clearCloud();
+    profileMissing = false;
+    $('#profile-first').value = ''; $('#profile-last').value = '';
+    $('#account-profile-status').textContent = '';
     $('#cloud-conflict').hidden = true;
     const uid = next?.uid, versionEpoch = epoch;
     store = next?.emailVerified ? createCloudStore(client.dbSDK, client.db, uid, () => epoch === versionEpoch && currentUID() === uid) : null;
+    profileStore = next ? createProfileStore(client.dbSDK, client.db, { uid, email: next.email }, () => epoch === versionEpoch && currentUID() === uid) : null;
     cloudStatus('Check cloud status before saving.');
     render();
   }
@@ -117,10 +159,11 @@ export function initAccounts({ capture, restore, localBusy, canSave, clearLocal 
     client.authSDK.onAuthStateChanged(client.auth, next => {
       if (`${next?.uid || ''}:${Boolean(next?.emailVerified)}` === authIdentity) return;
       changed(next);
-      if (!working && store) run(checkCloud, 'Checking your cloud history…');
+      if (!working && next) run(async () => { await checkProfile(); if (store) await checkCloud(); }, 'Checking your account…');
     });
     changed(client.auth.currentUser);
     status('Connected to the shared Job Tracker / Payola Draft account service. No history has been uploaded.');
+    await checkProfile();
     if (store) await checkCloud();
   }, 'Connecting account service…'));
   $('#account-action').addEventListener('change', () => {
@@ -149,7 +192,8 @@ export function initAccounts({ capture, restore, localBusy, canSave, clearLocal 
         try { await sdk.updateProfile(credential.user, { displayName: `${firstName} ${lastName}` }); }
         catch { warnings.push('Your account exists, but the display name could not be saved.'); }
         try {
-          await bounded(client.dbSDK.setDoc(client.dbSDK.doc(client.db, 'users', credential.user.uid), { firstName, lastName, email, createdAt: client.dbSDK.serverTimestamp() }), 'Profile save is taking too long.');
+          const target = credential.user;
+          await bounded(createProfileStore(client.dbSDK, client.db, { uid: target.uid, email }, () => client.auth.currentUser?.uid === target.uid).finish(firstName, lastName), 'Profile save is taking too long.');
         } catch { warnings.push('The optional Job Tracker profile was not confirmed saved; it may finish later. Your login exists; do not register again.'); }
         try {
           await sdk.sendEmailVerification(credential.user);
@@ -163,6 +207,7 @@ export function initAccounts({ capture, restore, localBusy, canSave, clearLocal 
       }
       changed(client.auth.currentUser);
       $('#account-password').value = ''; $('#account-confirm').value = '';
+      await checkProfile();
       if (store) {
         try { await checkCloud(); }
         catch (error) { cloudStatus(messageFor(error)); status('Signed in successfully. Cloud access needs attention; your local history is unchanged.'); }
@@ -182,6 +227,7 @@ export function initAccounts({ capture, restore, localBusy, canSave, clearLocal 
     if (client.auth.currentUser?.uid !== target.uid) throw new Error('Account changed. Retry using the current account.');
     changed(client.auth.currentUser);
     status(user.emailVerified ? 'Email verified. Cloud controls are available.' : 'Email is not verified yet.');
+    await checkProfile();
     if (store) await checkCloud();
   }));
   $('#account-signout').addEventListener('click', () => run(async () => {
@@ -196,13 +242,14 @@ export function initAccounts({ capture, restore, localBusy, canSave, clearLocal 
   $('#cloud-check').addEventListener('click', () => run(async () => { await checkCloud(); status('Cloud status checked. Your local view is unchanged.'); }, 'Checking cloud status…'));
   $('#cloud-save').addEventListener('click', () => run(async () => {
     if (!store || localBusy() || !canSave() || cloudVersion === null) throw new Error('Load history, finish pending work and check cloud status first.');
-    const text = capture(), revision = localRevision, target = store;
+    const text = capture(), revision = localRevision, target = store, preservedRevision = preservation.revision;
     if (!window.confirm('Upload this normalized listening history, dates, tracks and source declarations to Firebase? This replaces this account’s Payola snapshot, not its jobs. Original import files and credentials are not uploaded.')) return;
     const expectedVersion = cloudVersion;
     cloudVersion = null;
     try { cloudVersion = await target.save(text, expectedVersion); }
     catch (error) { cloudStatus('Save was not confirmed. Check cloud status before retrying; a pending write may still complete. Local history is unchanged.'); throw error; }
     savedRevision = revision;
+    preservation.cloudSaved(preservedRevision);
     $('#cloud-conflict').hidden = true;
     cloudStatus(`Saved to your account · version ${cloudVersion}. Use Load saved history on another device.`);
     status('Cloud save succeeded. Local downloads still work.');
@@ -214,6 +261,7 @@ export function initAccounts({ capture, restore, localBusy, canSave, clearLocal 
     if (revision !== localRevision || localBusy()) throw new Error('Local view changed while loading. Retry; nothing was replaced.');
     if (!window.confirm('Replace the open view with your cloud snapshot? History remains user-editable, not verified. Last.fm dollar scenarios require a fresh opt-in.')) return;
     restore(loaded.text); cloudVersion = loaded.version; savedRevision = localRevision;
+    preservation.cloudSaved();
     $('#cloud-conflict').hidden = true;
     cloudStatus(`Loaded cloud version ${loaded.version}.`); status('Saved history loaded. No histories were merged.');
   }, 'Loading saved history…'));
@@ -225,6 +273,7 @@ export function initAccounts({ capture, restore, localBusy, canSave, clearLocal 
     try { cloudVersion = repair ? await target.recover(repair) : await target.remove(expectedVersion); }
     catch (error) { cloudStatus('Deletion was not confirmed. Check cloud status before retrying. Local history is unchanged.'); throw error; }
     savedRevision = -1;
+    preservation.clearCloud();
     $('#cloud-conflict').hidden = true;
     cloudStatus('Cloud Payola history deleted. Local view and jobs are unchanged.');
     status('Cloud deletion succeeded. Your local view is unchanged.');

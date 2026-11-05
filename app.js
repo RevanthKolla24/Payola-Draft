@@ -5,6 +5,7 @@ import { loadLastfm } from './lastfm-client.js';
 import { sessionText, parseSession, MAX_SESSION_FILE_BYTES } from './session.js';
 import { listeningInsights } from './insights.js';
 import { initAccounts } from './accounts.js';
+import { createPreservationTracker } from './preservation.js';
 
 const $ = selector => document.querySelector(selector);
 let mode = 'sample';
@@ -33,6 +34,21 @@ let restoredSession = false;
 let restorationSource = '';
 let restoring = false;
 const busyChanged = () => document.dispatchEvent(new Event('payola:busy'));
+const backups = createPreservationTracker();
+const warnBeforeLeaving = event => { event.preventDefault(); event.returnValue = ''; };
+let leaveWarning = false;
+function renderPreservation() {
+  $('#unsaved-history').hidden = !backups.unsaved;
+  if (backups.unsaved === leaveWarning) return;
+  leaveWarning = backups.unsaved;
+  if (leaveWarning) window.addEventListener('beforeunload', warnBeforeLeaving);
+  else window.removeEventListener('beforeunload', warnBeforeLeaving);
+}
+const preservation = {
+  get revision() { return backups.revision; },
+  cloudSaved: revision => { backups.cloudSaved(revision); renderPreservation(); },
+  clearCloud: () => { backups.clearCloud(); renderPreservation(); }
+};
 try { rememberedUser = localStorage.getItem('payola-lastfm-user') || ''; } catch { /* Storage is optional. */ }
 
 function renderAvailability() {
@@ -71,6 +87,8 @@ function coverage() {
   return `${format(from || min)} – ${format(to || max)} · UTC`;
 }
 function render() {
+  backups.observe([mode, selectedService, records, manual, from, to, duplicateCount, lastfmAttribution, lastfmLoaded], mode !== 'sample' && mode !== 'routes' && (mode === 'manual' ? Boolean(manual) : records.length > 0));
+  renderPreservation();
   // Repainting (including a rejected restore) must not mark saved history dirty.
   document.dispatchEvent(new CustomEvent('payola:view', { detail: [mode, selectedService, records, manual, from, to, duplicateCount, lastfmAttribution, lastfmLoaded] }));
   result = mode === 'manual' ? manual || { plays: 0, amount: 0, ms: null, artists: [], audit: null } : summarize(records, { from, to });
@@ -536,6 +554,7 @@ $('#save-session').addEventListener('click', () => {
     if (!window.confirm('This session file contains listening history, artist/track names and dates. Keep it private. It is downloaded locally, not uploaded. Continue?')) return;
     const url = URL.createObjectURL(new Blob([output], { type: 'application/json' }));
     const link = document.createElement('a'); link.href = url; link.download = 'payola-draft-session.json'; link.click();
+    backups.downloaded(); renderPreservation();
     setTimeout(() => URL.revokeObjectURL(url), 10000);
     notify('Session downloaded. Keep it private; it contains listening history.');
   } catch (error) { notify(error.message); }
@@ -562,7 +581,7 @@ $('#restore-scenario').addEventListener('click', () => {
 });
 render();
 checkIntegrations();
-initAccounts({ capture: captureSession, localBusy: () => busy || Boolean(lastfmController) || restoring,
+initAccounts({ capture: captureSession, preservation, localBusy: () => busy || Boolean(lastfmController) || restoring,
   clearLocal: () => {
     if (busy || lastfmController || restoring) throw new Error('Signed out, but local work started before clearing. Finish or cancel it, then use Clear data.');
     rememberedUser = ''; try { localStorage.removeItem('payola-lastfm-user'); } catch { /* Storage may be unavailable. */ }
