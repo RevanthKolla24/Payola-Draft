@@ -19,6 +19,7 @@ let importedNames = new Set();
 let occurrences = new Map();
 let duplicateCount = 0;
 let importWorker;
+let pendingImport = null;
 let sessionBytes = 0;
 let selectedArtist = null;
 let busy = false;
@@ -87,6 +88,7 @@ function coverage() {
   return `${format(from || min)} – ${format(to || max)} · UTC`;
 }
 function render() {
+  $('#view-badge').textContent = mode === 'sample' ? 'Fictional sample' : mode === 'routes' ? 'No history loaded' : mode === 'csv' ? 'CSV · unpriced' : mode === 'lastfm' ? 'Last.fm scrobbles' : mode === 'manual' ? 'Self-reported counts' : 'Imported history';
   backups.observe([mode, selectedService, records, manual, from, to, duplicateCount, lastfmAttribution, lastfmLoaded], mode !== 'sample' && mode !== 'routes' && (mode === 'manual' ? Boolean(manual) : records.length > 0));
   renderPreservation();
   // Repainting (including a rejected restore) must not mark saved history dirty.
@@ -94,7 +96,7 @@ function render() {
   result = mode === 'manual' ? manual || { plays: 0, amount: 0, ms: null, artists: [], audit: null } : summarize(records, { from, to });
   if (mode === 'lastfm') { result.ms = null; result.amount = null; }
   $('#stat-plays').textContent = number(result.plays);
-  const noHistory = mode === 'routes' || (mode === 'import' && !records.length);
+  const noHistory = mode === 'routes' || (['import', 'csv'].includes(mode) && !records.length);
   $('#stat-hours').innerHTML = result.ms === null || noHistory ? '—' : `${number(Math.round(result.ms / 3600000))} <em>hrs</em>`;
   $('#hours-note').textContent = noHistory ? 'No listening history loaded' : result.ms === null ? 'Not available from manual counts' : 'With your favorite recordings';
   $('#stat-artists').textContent = number(result.artists.length);
@@ -103,6 +105,7 @@ function render() {
   $('#receipt-type').textContent = mode === 'sample' ? 'FICTIONAL SAMPLE' : mode === 'manual' ? 'SELF-REPORTED' : 'LOCAL IMPORT';
   $('#coverage').textContent = coverage();
   $('#date-toggle').hidden = mode === 'manual';
+  $('#date-toggle').innerHTML = `${from || to ? 'Custom dates' : 'All available dates'} <span>⌄</span>`;
   if (mode === 'manual') $('#date-form').hidden = true;
   $('#source-label').textContent = mode === 'sample' ? 'FICTIONAL DATA · REAL MATH' : mode === 'manual' ? 'YOUR COUNTS · HISTORICAL BENCHMARK' : 'LOCAL VIEW · CLOUD SAVES OPTIONAL';
   $('#receipt-kicker').textContent = mode === 'sample' ? 'THE SAMPLE COLLECTION' : mode === 'manual' ? 'YOUR OWN ROTATION' : 'YOUR PRIVATE COLLECTION';
@@ -130,14 +133,14 @@ function renderHistoryInfo() {
   const observed = bounds(records);
   const period = (start, end) => start && end ? `${start} – ${end} UTC` : 'No dated records loaded';
   const details = [
-    ['Source', routes ? 'No route selected' : last ? 'Last.fm recorded scrobbles' : counts ? 'Manual, self-reported counts' : mode === 'sample' ? 'Fictional Spotify sample' : restoredSession ? 'Spotify-format history · original files not authenticated' : 'Local Spotify JSON/ZIP import'],
+    ['Source', routes ? 'No route selected' : last ? 'Last.fm recorded scrobbles' : counts ? 'Manual, self-reported counts' : mode === 'sample' ? 'Fictional Spotify sample' : mode === 'csv' ? 'User-provided CSV listening events' : restoredSession ? 'Spotify-format history · original files not authenticated' : 'Local Spotify JSON/ZIP import'],
     ['Restoration', restoredSession ? `${restorationSource === 'cloud' ? 'Cloud snapshot' : 'Local session file'} · user-editable and unverified` : 'Not restored'],
-    ['Service attribution', routes ? 'Not declared' : last ? lastfmLoaded ? attributionText(lastfmAttribution) : 'Not declared; load history first' : counts ? `${SERVICES[manualService]} · self-reported, not verified` : 'Spotify export format; paid-stream eligibility not verified'],
+    ['Service attribution', routes ? 'Not declared' : last ? lastfmLoaded ? attributionText(lastfmAttribution) : 'Not declared; load history first' : counts ? `${SERVICES[manualService]} · self-reported, not verified` : mode === 'csv' ? `${SERVICES[selectedService]} · self-reported, not verified` : 'Spotify export format; paid-stream eligibility not verified'],
     ['Original request / declaration period', last && lastfmLoaded ? period(lastfmAttribution.from, lastfmAttribution.to) : 'Not applicable'],
     ['Observed record dates', counts ? 'Unavailable from manual counts' : period(observed.from, observed.to)],
     ['Displayed period', counts ? 'No date range' : routes ? 'No history loaded' : coverage()],
-    ['Duration', last || counts ? 'Unavailable; never inferred' : routes ? 'No history loaded' : 'Reported playback duration for included records'],
-    ['Valuation', routes ? 'None' : scenarioActive() ? 'Optional hypothetical Spotify scenario · Duetti 2024 sample, $0.003/scrobble; not verified earnings' : last || (counts && manualService !== 'spotify') ? 'Unpriced · no royalty estimate' : 'Historical Spotify benchmark · Duetti 2024 sample, $0.003/play; not verified earnings'],
+    ['Duration', mode === 'csv' && result.ms === null ? 'Unknown; never inferred' : last || counts ? 'Unavailable; never inferred' : routes ? 'No history loaded' : 'Reported playback duration for included records'],
+    ['Valuation', routes ? 'None' : scenarioActive() ? 'Optional hypothetical Spotify scenario · Duetti 2024 sample, $0.003/scrobble; not verified earnings' : mode === 'csv' || last || (counts && manualService !== 'spotify') ? 'Unpriced · no royalty estimate' : 'Historical Spotify benchmark · Duetti 2024 sample, $0.003/play; not verified earnings'],
   ];
   $('#history-details').innerHTML = details.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join('');
   $('#history-audit').textContent = routes ? 'Choose a supported route above to begin. No history is loaded.' : $('#audit').textContent;
@@ -146,6 +149,24 @@ function renderHistoryInfo() {
   $('#restore-scenario').hidden = !restoredSession || mode !== 'lastfm' || !lastfmAttribution.confirmed || lastfmAttribution.service !== 'spotify' || scenarioActive();
 }
 function renderAttribution() {
+  if (mode === 'csv') {
+    $('#receipt .receipt-source > span:first-child').textContent = SERVICES[selectedService];
+    $('#receipt .receipt-amount-label').textContent = 'User-provided listening events';
+    $('#receipt-total').textContent = number(result.plays);
+    $('#receipt .currency-label').textContent = 'UNVERIFIED CSV · UNPRICED';
+    $('#source-label').textContent = `${SERVICES[selectedService]} · USER-PROVIDED CSV`;
+    $('#receipt .receipt-disclaimer').textContent = 'Unverified listening events. No royalty estimate. Missing duration stays unknown.';
+    $('#receipt').querySelectorAll('.receipt-line').forEach((line, i) => { if (i) line.hidden = true; });
+    $('.assumptions-card').hidden = true;
+    $('#calculation-formula').textContent = 'CSV listening events are always unpriced. No royalty estimate.';
+    $('.amount-head').textContent = 'UNPRICED';
+    $('#artist-rows').querySelectorAll('tr').forEach(row => { if (row.cells.length === 4) row.cells[3].textContent = '—'; });
+    $('.table-footer > span:last-child').textContent = 'User-provided events · no royalty estimate';
+    $('#data-note').textContent = 'CSV service is self-reported. Playlists and general watch activity are not listening history. Unknown duration is never inferred; known plays under 30 seconds are excluded.';
+    $('#stat-plays').nextElementSibling.textContent = 'User-provided events; unknown durations retained';
+    if (result.ms === null) $('#hours-note').textContent = 'Unknown: some events have no duration';
+    return;
+  }
   if (mode === 'routes') {
     $('#source-label').textContent = 'CHOOSE A LISTENING SOURCE';
     $('#receipt .receipt-source > span:first-child').textContent = SERVICES[selectedService];
@@ -222,7 +243,6 @@ function renderSourceLabels() {
   $('#source-label').textContent = last ? 'LAST.FM · RECORDED LISTENING' : $('#source-label').textContent;
   $('#receipt-kicker').textContent = last ? 'YOUR LAST.FM COLLECTION' : $('#receipt-kicker').textContent;
   $('#hours-note').textContent = last ? 'Unavailable from scrobbles' : $('#hours-note').textContent;
-  $('#monthly-metric option[value="hours"]').disabled = last;
   $('#monthly-metric option[value="plays"]').textContent = last ? 'Recorded scrobbles' : 'Included plays';
   $('#data-note').textContent = last ? 'Last.fm scrobbles are not verified paid streams. Service and duration unknown. No royalty estimate. Histories are never combined with Spotify imports.' : $('#data-note').textContent;
   $('#audit').textContent = last ? `Dated scrobbles included: ${number(result.plays)}. ${lastfmLoaded?.skipped || 0} now-playing or unusable entries skipped; ${lastfmLoaded?.duplicates || 0} identical timestamp/artist/track entries collapsed. Coverage is not guaranteed complete.` : $('#audit').textContent;
@@ -235,11 +255,14 @@ function renderSourceLabels() {
   }
 }
 function renderInsights() {
+  const hoursAvailable = result.ms !== null && mode !== 'lastfm' && mode !== 'manual' && mode !== 'routes';
+  $('#monthly-metric option[value="hours"]').disabled = !hoursAvailable;
+  if (!hoursAvailable && $('#monthly-metric').value === 'hours') $('#monthly-metric').value = 'plays';
   const insight = listeningInsights(result);
   $('#artist-concentration').textContent = insight.concentration === null ? 'Add listening to see artist concentration.' : `Your top ${insight.artistCount} artist${insight.artistCount === 1 ? '' : 's'} account for ${insight.concentration.toFixed(1)}% of ${mode === 'manual' ? 'your self-reported counts' : mode === 'lastfm' ? 'recorded scrobbles in this view' : 'included plays in this view'}. This is personal listening share, not royalty-pool share.`;
   $('#top-tracks').innerHTML = mode === 'manual' ? '<p class="chart-note">Track details are unavailable from manual artist counts.</p>' : insight.tracks.length ? `<ol class="top-track-list">${insight.tracks.map(t => `<li><span>${esc(t.title)}<small>${esc(t.artist)}</small></span><strong>${number(t.plays)} ${mode === 'lastfm' ? 'scrobbles' : 'plays'}</strong></li>`).join('')}</ol><p class="chart-note">Top 10 artist/title pairs for the displayed period. Titles are not matched across versions or services.</p>` : '<p class="chart-note">No tracks in the displayed period.</p>';
   const months = result.months || [];
-  const hours = mode !== 'lastfm' && $('#monthly-metric').value === 'hours';
+  const hours = hoursAvailable && $('#monthly-metric').value === 'hours';
   const value = m => hours ? m.ms / 3600000 : m.plays;
   const max = Math.max(1, ...months.map(value));
   $('#monthly-chart').innerHTML = months.length ? months.map(m => `<div class="month-column"><span class="month-value">${hours ? value(m).toFixed(1) : number(m.plays)}</span><div class="month-track"><div style="height:${Math.max(1, value(m) / max * 100)}%"></div></div><span>${esc(m.month)}</span></div>`).join('') : '<p class="chart-note">Monthly trends need dated listening history. Import files or try the sample.</p>';
@@ -249,19 +272,26 @@ function renderInsights() {
 function renderRows() {
   const search = $('#artist-search').value.trim().toLocaleLowerCase();
   const artists = result.artists.map((artist, index) => ({ artist, index })).filter(({ artist }) => artist.name.toLocaleLowerCase().includes(search));
+  const sort = $('#artist-sort').value;
+  artists.sort((a, b) => (sort === 'name' ? a.artist.name.localeCompare(b.artist.name) : sort === 'fewest' ? a.artist.plays - b.artist.plays : b.artist.plays - a.artist.plays) || a.artist.name.localeCompare(b.artist.name));
   const max = result.artists[0]?.plays || 1;
   $('#artist-rows').innerHTML = artists.slice(0, 100).map(({ artist: a, index }) => `<tr><td class="rank">${String(index + 1).padStart(2, '0')}</td><td><button class="artist-button" data-artist="${index}"><span class="artist-avatar avatar-${(index + 1) % 6}" aria-hidden="true">${esc(a.name[0])}</span><span><span class="artist-name">${esc(a.name)}</span><span class="artist-sub">${mode === 'sample' ? 'FICTIONAL ARTIST' : mode === 'manual' ? 'SELF-REPORTED' : `${a.tracks.size} TRACK${a.tracks.size === 1 ? '' : 'S'}`}</span></span></button></td><td>${number(a.plays)}<div class="play-bar"><span style="width:${Math.round(a.plays / max * 100)}%"></span></div></td><td>${money(a.plays * RATE)}</td></tr>`).join('') || `<tr><td colspan="4" class="empty-row">${search ? 'No artists match your search.' : mode === 'import' && !records.length ? 'Your next favorite perspective starts with an import.' : 'No included plays. Try a different date range or add your listening.'}</td></tr>`;
   $('#table-count').textContent = `${number(artists.length)} artist${artists.length === 1 ? '' : 's'}${search ? ' matching your search' : ' in your rotation'}${artists.length > 100 ? ' · First 100 shown; search to find more' : ''}`;
-  if (mode === 'manual' && manualService !== 'spotify') renderAttribution();
+  if (mode === 'csv' || (mode === 'manual' && manualService !== 'spotify')) renderAttribution();
   if (mode === 'lastfm') {
     $('#artist-rows').querySelectorAll('tr').forEach(row => { if (row.cells.length === 4) row.cells[3].textContent = '—'; });
     renderAttribution();
   }
 }
+function csvImportPanel() {
+  return `<section class="input-card"><h3>Import your own CSV listening events</h3><p>One row per actual music listen—not playlists, liked songs, or general watch activity. Service is self-reported; all CSV history is unpriced. Native Apple privacy and YouTube Takeout exports are not yet supported.</p><p>Map exact header names below. Dates must be YYYY-MM-DD (UTC). Duration is actual milliseconds played, not track length. Leave its mapping blank if unknown. Files in one selection must share headers.</p><details><summary>Synthetic CSV example</summary><pre>date,artist,track,ms_played
+2026-01-01,Example Artist,Example Song,60000
+2026-01-02,Example Artist,Another Song,</pre></details><div class="csv-mapping">${[['date', 'Date', 'date'], ['artist', 'Artist', 'artist'], ['track', 'Track title', 'track'], ['ms', 'Milliseconds played (optional)', 'ms_played']].map(([key, label, value]) => `<label>${label}<input data-csv-map id="csv-${key}" value="${value}" maxlength="500"></label>`).join('')}</div><label class="file-zone" id="drop-zone">Choose CSV files<input id="history-files" type="file" accept=".csv,text/csv" multiple><small>100 MB per selection; 200,000 retained records. Normalized history must fit a 25 MB full-session backup. Review before confirming.</small></label><progress id="import-progress" max="1" value="0" aria-label="Import progress" hidden></progress><div id="import-feedback" class="import-feedback" role="status" aria-live="polite"></div><section id="import-summary" hidden></section></section>`;
+}
 function syncService() {
   $('#service-picker').value = selectedService;
   $('[data-mode="import"]').hidden = selectedService !== 'spotify';
-  $('#service-help').textContent = 'Last.fm recommended if you already scrobble—not required. Manual counts are also available. ' + (selectedService === 'spotify' ? 'Spotify JSON/ZIP imports are supported.' : 'No history importer or validated royalty benchmark for this service.');
+  $('#service-help').textContent = 'Last.fm is optional. Manual counts and mapped CSV events are available. ' + (selectedService === 'spotify' ? 'Spotify Extended History JSON/ZIP imports are supported.' : 'CSV is unpriced and user-provided, not native Apple privacy or YouTube Takeout compatibility.');
   renderAvailability();
 }
 function confirmDiscard() {
@@ -287,30 +317,37 @@ function setMode(next) {
   $('#artist-dialog').close();
   $('#artist-detail').replaceChildren();
   busy = false;
-  mode = next; from = ''; to = ''; $('#artist-search').value = '';
+  mode = next; from = ''; to = ''; $('#artist-search').value = ''; $('#artist-sort').value = 'most';
   $('#from-date').value = ''; $('#to-date').value = ''; $('#date-form').hidden = true; $('#date-toggle').setAttribute('aria-expanded', 'false');
   records = next === 'sample' ? sampleRecords() : []; manual = null; importedNames.clear(); occurrences.clear(); duplicateCount = 0; sessionBytes = 0;
-  document.querySelectorAll('.tab').forEach(tab => tab.classList.toggle('active', tab.dataset.mode === next));
+  document.querySelectorAll('.tab').forEach(tab => { tab.classList.toggle('active', tab.dataset.mode === next); tab.setAttribute('aria-pressed', String(tab.dataset.mode === next)); });
   const panel = $('#input-panel'); panel.hidden = next === 'sample';
-  if (next === 'routes') panel.innerHTML = `<section class="input-card"><h3>Choose how to add your ${SERVICES[selectedService]} listening.</h3><p>Use the routes above. Last.fm is recommended only if you already scrobble; it is not required. Manual counts are always available.${selectedService === 'spotify' ? ' Spotify JSON/ZIP imports are also supported.' : ' No file-history importer or validated royalty benchmark is available for this service.'}${selectedService === 'apple' ? ' The optional Apple Music preview shows recent resources, not play counts.' : ''}</p></section>`;
+  if (next === 'routes') panel.innerHTML = `<section class="input-card"><h3>Choose how to add your ${SERVICES[selectedService]} listening.</h3><p>Use the routes above. Last.fm is recommended only if you already scrobble; it is not required. Manual counts are always available.${selectedService === 'spotify' ? ' Spotify JSON/ZIP imports are also supported.' : ' Mapped CSV listening history is supported and unpriced. Native privacy/Takeout exports and a validated royalty benchmark are not supported for this service.'}${selectedService === 'apple' ? ' The optional Apple Music preview shows recent resources, not play counts.' : ''}</p></section>`;
   else if (next === 'manual') panel.innerHTML = `<section class="input-card"><h3>Put a number on your repeat button.</h3><p>No files needed. Enter an artist and your ${SERVICES[selectedService]} play count. Counts are self-reported; non-Spotify counts are unpriced.</p><form id="manual-form"><label>Artist name<input name="artist" placeholder="Your favorite artist" required maxlength="100"></label><label>${SERVICES[selectedService]} plays<input name="plays" type="number" min="1" max="10000000" step="1" placeholder="e.g. 500" required></label><button class="button" type="submit">Make my receipt ↗</button></form></section>`;
-  else if (next === 'import') panel.innerHTML = `<section class="input-card"><h3>Bring your history. Keep it private.</h3><ol class="import-steps"><li><strong>Request your history</strong><p>In <a href="https://www.spotify.com/account/privacy/" target="_blank" rel="noreferrer">Spotify privacy settings ↗</a>, request Extended Streaming History, not the standard account-history package.</p></li><li><strong>Download your export</strong><p>When it is ready, save the ZIP archive. Already unzipped? Choose audio-history JSON files instead.</p></li><li><strong>Open it here</strong><p>We read the files on your device. No account connection or upload required.</p></li></ol><label class="file-zone" id="drop-zone">↥ &nbsp; Drop a ZIP or JSON files here, or choose files<input id="history-files" type="file" accept=".zip,.json,application/json,application/zip" multiple><small>100 MB input / expanded JSON per selection. Session cap: 100 MB imported JSON and 200,000 retained records. Cancel discards the entire pending selection. Unsupported ZIPs can be unzipped first.</small></label><progress id="import-progress" max="1" value="0" aria-label="Import progress" hidden></progress><div id="import-feedback" class="import-feedback" role="status" aria-live="polite"></div><section id="import-summary" hidden></section></section>`;
+  else if (next === 'import') panel.innerHTML = `<section class="input-card"><h3>Bring your history. Keep it private.</h3><ol class="import-steps"><li><strong>Request your history</strong><p>In <a href="https://www.spotify.com/account/privacy/" target="_blank" rel="noreferrer">Spotify privacy settings ↗</a>, request Extended Streaming History, not the standard account-history package.</p></li><li><strong>Download your export</strong><p>When it is ready, save the ZIP archive. Already unzipped? Choose audio-history JSON files instead.</p></li><li><strong>Open it here</strong><p>We read the files on your device. No account connection or upload required.</p></li></ol><label class="file-zone" id="drop-zone">↥ &nbsp; Drop a ZIP or JSON files here, or choose files<input id="history-files" type="file" accept=".zip,.json,application/json,application/zip" multiple><small>100 MB input / expanded JSON per selection. Session caps: 100 MB input history, 200,000 retained records, and normalized history small enough for a 25 MB full-session backup. Cancel discards the entire pending selection. Unsupported ZIPs can be unzipped first.</small></label><progress id="import-progress" max="1" value="0" aria-label="Import progress" hidden></progress><div id="import-feedback" class="import-feedback" role="status" aria-live="polite"></div><section id="import-summary" hidden></section></section>`;
+  else if (next === 'csv') panel.innerHTML = csvImportPanel();
   else if (next === 'lastfm') {
     $('#monthly-metric').value = 'plays';
     const today = new Date().toISOString().slice(0, 10);
     const month = today.slice(0, 7) + '-01';
     panel.innerHTML = `<section class="input-card"><h3>Your scrobbles. No downloads.</h3><p>Load public recorded listening from Last.fm. No password or account authorization. Only previously scrobbled activity is available—not your entire streaming history. Actual duration is unknown. Declare a service below; only explicitly confirmed Spotify histories may opt into a hypothetical historical benchmark scenario.</p><p>Your username and dates go through this server to Last.fm. History stays in this tab, without server persistence. Hosting infrastructure may log requests. Loading or refreshing replaces the current Last.fm view only after success.</p><form id="lastfm-form"><label>Last.fm username<input name="user" id="lastfm-user" maxlength="50" required pattern="[a-zA-Z0-9_-]+" value="${esc(rememberedUser)}" autocomplete="off"></label><label>From (UTC)<input name="from" type="date" min="1970-01-01" value="${month}" required></label><label>To (UTC)<input name="to" type="date" min="1970-01-01" value="${today}" required></label><label>Streaming service<select name="service" id="lastfm-service">${Object.entries(SERVICES).map(([key, label]) => `<option value="${key}">${label}</option>`).join('')}</select></label><label class="remember-label"><input id="lastfm-confirm" type="checkbox"> All scrobbles in the requested period came from this service (self-reported)</label><label class="remember-label"><input id="lastfm-scenario" type="checkbox" disabled> Optional Spotify historical benchmark scenario—not verified earnings</label><label class="remember-label"><input id="remember-lastfm" type="checkbox" ${rememberedUser ? 'checked' : ''}> Remember username on this device</label><button class="button" type="submit">Load / refresh listening ↻</button><button class="text-button" type="button" id="forget-lastfm">Forget saved username</button><button class="text-button" type="button" id="cancel-lastfm" hidden>Cancel loading</button></form><progress id="lastfm-progress" max="1" value="0" aria-label="Last.fm loading progress" hidden></progress><p id="lastfm-status" role="status" aria-live="polite">Select a range of up to 100 pages (about 20,000 scrobbles). Refresh is manual, not continuous syncing.</p><a id="lastfm-credit" href="https://www.last.fm/" target="_blank" rel="noreferrer">Listening data from Last.fm ↗</a></section>`;
   } else panel.innerHTML = '';
+  if (['import', 'csv'].includes(next)) $('#history-files').closest('label').insertAdjacentHTML('beforebegin', '<label>Import action<select id="import-action"><option value="add">Add to current history</option><option value="replace">Replace current history after confirmation</option></select></label>');
   render();
 }
 document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => requestMode(tab.dataset.mode)));
 $('#note-import').addEventListener('click', () => requestMode('import'));
 $('#artist-search').addEventListener('input', renderRows);
+$('#artist-sort').addEventListener('change', renderRows);
+$('#reset-view').addEventListener('click', () => { $('#artist-search').value = ''; $('#artist-sort').value = 'most'; $('#compare-toggle').checked = false; $('#year-preset').value = ''; applyRange({ from: '', to: '' }); });
+$('#start-import').addEventListener('click', () => { requestMode(selectedService === 'spotify' ? 'import' : 'csv'); $('#add-listening').scrollIntoView({ block: 'start' }); });
+$('#start-sample').addEventListener('click', () => { requestMode('sample'); $('#dashboard').scrollIntoView({ block: 'start' }); });
+$('#open-account').addEventListener('click', () => { $('#accounts').open = true; $('#accounts').scrollIntoView({ block: 'start' }); $('#accounts > summary').focus({ preventScroll: true }); });
 $('#monthly-metric').addEventListener('change', renderInsights);
 $('#clear-button').addEventListener('click', () => {
   if (restoring) { notify('Wait for session restore to finish.'); return; }
   if (!confirmDiscard()) return;
-  setMode(mode === 'lastfm' ? 'lastfm' : selectedService === 'spotify' ? 'import' : 'routes');
+  setMode(['csv', 'lastfm'].includes(mode) ? mode : selectedService === 'spotify' ? 'import' : 'routes');
   notify('Listening data cleared from this tab. Saved usernames can be removed with “Forget saved username”.');
 });
 $('#input-panel').addEventListener('submit', event => {
@@ -319,7 +356,7 @@ $('#input-panel').addEventListener('submit', event => {
   event.preventDefault();
   if (restoring) { notify('Wait for session restore to finish.'); return; }
   const data = new FormData(event.target);
-  try { manual = manualSummary(String(data.get('artist')), Number(data.get('plays'))); manualService = selectedService; if (manualService !== 'spotify') manual.amount = null; render(); notify('Your Payola Draft is ready.'); } catch (error) { notify(error.message); }
+  try { manual = manualSummary(String(data.get('artist')), Number(data.get('plays'))); manualService = selectedService; if (manualService !== 'spotify') manual.amount = null; render(); notify('Your Payola Reciept is ready.'); } catch (error) { notify(error.message); }
 });
 $('#input-panel').addEventListener('click', event => {
   if (event.target.id === 'cancel-lastfm') { lastfmController?.abort(); }
@@ -364,7 +401,10 @@ for (const type of ['dragover', 'dragleave', 'drop']) $('#input-panel').addEvent
   if (type === 'drop' && !busy) importFiles([...event.dataTransfer.files]);
 });
 function stopImport() {
-  importWorker?.terminate(); importWorker = null; busy = false;
+  importWorker?.terminate(); importWorker = null; pendingImport = null; busy = false;
+  $('#import-review')?.remove();
+  if ($('#import-action')) $('#import-action').disabled = false;
+  document.querySelectorAll('[data-csv-map]').forEach(input => { input.disabled = false; });
   busyChanged();
   if ($('#history-files')) { $('#history-files').disabled = false; $('#history-files').value = ''; }
   if ($('#cancel-import')) $('#cancel-import').hidden = true;
@@ -380,6 +420,8 @@ function importFiles(files) {
   $('#cancel-import')?.remove(); feedback.before(cancel);
   cancel.addEventListener('click', () => { stopImport(); feedback.textContent = 'Import cancelled. The whole current selection was discarded; previously imported history is unchanged.'; });
   busy = true; input.disabled = true;
+  $('#import-action').disabled = true;
+  document.querySelectorAll('[data-csv-map]').forEach(input => { input.disabled = true; });
   busyChanged();
   const progress = $('#import-progress'); progress.hidden = false; progress.max = 1; progress.value = 0;
   feedback.textContent = 'Starting private background import… Previously imported history remains unchanged until this selection finishes.';
@@ -391,15 +433,27 @@ function importFiles(files) {
       if (data.type === 'progress') { feedback.textContent = data.stage; progress.value = data.value; return; }
       if (data.type === 'error') { stopImport(); feedback.textContent = data.message; return; }
       const imported = data.result;
-      records = imported.records; importedNames = imported.hashes; occurrences = imported.occurrences;
-      sessionBytes = imported.bytes; duplicateCount = imported.duplicates;
-      stopImport(); feedback.textContent = imported.messages.join('\n'); render();
-      const full = summarize(records), available = bounds(records);
-      $('#import-summary').hidden = false;
-      $('#import-summary').innerHTML = `<h3>Import summary</h3><p>${number(records.length)} records retained · ${number(full.plays)} included plays · ${number(records.length - full.plays)} excluded · ${number(duplicateCount)} matching occurrences removed across files.</p><p>${esc(available.from || 'No dates')} – ${esc(available.to || 'No dates')} (UTC)<br>${(sessionBytes / 1048576).toFixed(1)} / 100 MB imported JSON · ${number(records.length)} / 200,000 records.<br>Coverage reflects these files; completeness is not verified. Matching uses timestamp, track identity, metadata, and duration.</p>`;
-      notify(imported.added ? 'Background import complete. Review the summary and exclusions.' : 'No new files imported. Review the feedback.');
+      importWorker.terminate(); importWorker = null;
+      feedback.textContent = imported.messages.join('\n');
+      if (!imported.added) { stopImport(); return; }
+      pendingImport = imported; progress.hidden = true;
+      const review = document.createElement('section'); review.id = 'import-review';
+      review.innerHTML = `<h3>Review detected listening history</h3>${imported.previews.map(p => `<p><strong>${esc(p.name)}</strong><br>${esc(p.source)} · ${number(p.records)} records · ${number(p.added)} new · ${number(p.duplicates)} duplicates · ${number(p.invalid)} invalid<br>${esc(p.from)} – ${esc(p.to)} UTC</p>`).join('')}<p>Only successful files above will be imported. Review file errors before continuing. Existing history is unchanged until confirmation.</p><button class="button" id="confirm-import">Confirm import</button>`;
+      feedback.after(review);
+      $('#confirm-import').addEventListener('click', () => {
+        if (!pendingImport) return;
+        records = imported.records; importedNames = imported.hashes; occurrences = imported.occurrences;
+        sessionBytes = imported.bytes; duplicateCount = imported.duplicates;
+        if ($('#import-action').value === 'replace') { from = ''; to = ''; $('#from-date').value = ''; $('#to-date').value = ''; }
+        stopImport(); render();
+        $('#import-summary').hidden = false;
+        $('#import-summary').textContent = `${number(records.length)} records retained · ${number(summarize(records).plays)} included events · ${number(duplicateCount)} matching occurrences removed. Coverage completeness is not verified.`;
+        notify('Import confirmed. Download a session to keep your history.');
+      });
     };
-    worker.postMessage({ files, state: { records, hashes: importedNames, occurrences, bytes: sessionBytes, duplicates: duplicateCount } });
+    const replace = $('#import-action').value === 'replace';
+    const mapping = mode === 'csv' ? Object.fromEntries(['date', 'artist', 'track', 'ms'].map(key => [key, $(`#csv-${key}`).value.trim()])) : undefined;
+    worker.postMessage({ files, state: { records: replace ? [] : records, hashes: replace ? new Set() : importedNames, occurrences: replace ? new Map() : occurrences, bytes: replace ? 0 : sessionBytes, duplicates: replace ? 0 : duplicateCount, csv: mode === 'csv', mapping } });
   } catch (error) { stopImport(); feedback.textContent = `Could not start background import: ${error.message}`; }
 }
 function applyRange(range) {
@@ -417,14 +471,14 @@ function renderComparison() {
   const c = comparePeriods(records, { from, to });
   if (!c) { panel.textContent = 'Import dated history to compare periods.'; return; }
   const signed = n => `${n > 0 ? '+' : ''}${n.toFixed(1)}`;
-  panel.innerHTML = `<h3>Your rotation, compared.</h3><p class="chart-note">Selected: ${c.from} – ${c.to}<br>Previous: ${c.previous.from} – ${c.previous.to}<br>Equal-length windows: ${number(c.days)} days each (UTC). ${c.outsideCoverage ? '<strong>One or both periods extend outside the observed file dates.</strong> ' : ''}Coverage completeness is not verified; gaps are not proof of zero listening.</p><div class="comparison-stats"><p><strong>${number(c.current.plays - c.prior.plays)}</strong> play change${c.playChange === null ? ' · No percentage: previous period has no included plays.' : ` · ${signed(c.playChange)}%`}</p><p><strong>${mode === 'lastfm' ? 'Unavailable' : signed((c.current.ms - c.prior.ms) / 3600000)}</strong> hours change</p></div><ul class="comparison-artists">${c.artists.slice(0, 8).map(a => `<li><span>${esc(a.name)}${a.newInPeriod ? '<small>New in this period—not necessarily newly discovered</small>' : ''}</span><span>${signed(a.delta)} pp listening share<br><small>${number(a.previousPlays)} → ${number(a.plays)} plays</small></span></li>`).join('') || '<li>No included plays in either period.</li>'}</ul>`;
+  panel.innerHTML = `<h3>Your rotation, compared.</h3><p class="chart-note">Selected: ${c.from} – ${c.to}<br>Previous: ${c.previous.from} – ${c.previous.to}<br>Equal-length windows: ${number(c.days)} days each (UTC). ${c.outsideCoverage ? '<strong>One or both periods extend outside the observed file dates.</strong> ' : ''}Coverage completeness is not verified; gaps are not proof of zero listening.</p><div class="comparison-stats"><p><strong>${number(c.current.plays - c.prior.plays)}</strong> play change${c.playChange === null ? ' · No percentage: previous period has no included plays.' : ` · ${signed(c.playChange)}%`}</p><p><strong>${mode === 'lastfm' || c.current.ms === null || c.prior.ms === null ? 'Unavailable' : signed((c.current.ms - c.prior.ms) / 3600000)}</strong> hours change</p></div><ul class="comparison-artists">${c.artists.slice(0, 8).map(a => `<li><span>${esc(a.name)}${a.newInPeriod ? '<small>New in this period—not necessarily newly discovered</small>' : ''}</span><span>${signed(a.delta)} pp listening share<br><small>${number(a.previousPlays)} → ${number(a.plays)} plays</small></span></li>`).join('') || '<li>No included plays in either period.</li>'}</ul>`;
   if (mode === 'lastfm') panel.insertAdjacentHTML('beforeend', `<p class="chart-note">Data from Last.fm · ${esc(attributionText(lastfmAttribution))}. Comparison counts recorded scrobbles, not verified streams. Duration unknown.</p>`);
 }
 $('#export-csv').addEventListener('click', () => {
   const range = bounds(records);
-  const csv = summaryCSV(result, { source: (mode === 'lastfm' ? 'Last.fm recorded scrobbles' : mode === 'sample' ? 'Fictional sample' : mode === 'manual' ? `Self-reported ${SERVICES[manualService]}` : 'Local Spotify import') + (restoredSession ? ' · restored user-editable session; provenance not authenticated' : ''), from: mode === 'manual' ? '' : from || range.from, to: mode === 'manual' ? '' : to || range.to, duplicates: duplicateCount, attribution: mode === 'lastfm' ? lastfmAttribution : null });
+  const csv = summaryCSV(result, { source: (mode === 'lastfm' ? 'Last.fm recorded scrobbles' : mode === 'sample' ? 'Fictional sample' : mode === 'manual' ? `Self-reported ${SERVICES[manualService]}` : mode === 'csv' ? `User-provided CSV history · ${SERVICES[selectedService]} self-reported` : 'Local Spotify import') + (restoredSession ? ' · restored user-editable session; provenance not authenticated' : ''), from: mode === 'manual' ? '' : from || range.from, to: mode === 'manual' ? '' : to || range.to, duplicates: duplicateCount, attribution: mode === 'lastfm' ? lastfmAttribution : null });
   const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
-  const link = document.createElement('a'); link.href = url; link.download = `payola-draft-summary-${mode}.csv`; link.click();
+  const link = document.createElement('a'); link.href = url; link.download = `payola-reciept-summary-${mode}.csv`; link.click();
   setTimeout(() => URL.revokeObjectURL(url), 10000); notify('CSV downloaded with artist totals, source, dates, exclusions, and benchmark assumptions.');
 });
 $('#date-toggle').addEventListener('click', () => { const form = $('#date-form'); form.hidden = !form.hidden; $('#date-toggle').setAttribute('aria-expanded', String(!form.hidden)); });
@@ -439,7 +493,7 @@ $('#artist-rows').addEventListener('click', event => {
   const a = result.artists[Number(button.dataset.artist)]; if (!a) return;
   selectedArtist = a;
   const tracks = [...a.tracks.entries()].sort((a, b) => b[1] - a[1]);
-  $('#artist-detail').innerHTML = `<h2>${esc(a.name)}</h2><div class="detail-total">${money(a.plays * RATE)}</div><p class="detail-meta">Estimated recording royalties · ${number(a.plays)} plays${a.ms === null ? '' : ` · ${(a.ms / 3600000).toFixed(1)} hours`}<br>${esc(coverage())}${mode === 'sample' ? '<br>Fictional sample artist and listening data.' : ''}</p><p class="detail-meta">Historical benchmark, not confirmed earnings or artist take-home.</p>${tracks.length ? `<ul class="track-list">${tracks.slice(0, 50).map(([name, plays]) => `<li><span>${esc(name)}</span><span>${number(plays)} plays</span></li>`).join('')}</ul>${tracks.length > 50 ? '<p class="detail-meta">Top 50 tracks shown.</p>' : ''}` : '<p class="detail-meta">Track details are unavailable for manual counts.</p>'}`;
+  $('#artist-detail').innerHTML = `<h2 id="artist-dialog-heading">${esc(a.name)}</h2><div class="detail-total">${money(a.plays * RATE)}</div><p class="detail-meta">Estimated recording royalties · ${number(a.plays)} plays${a.ms === null ? '' : ` · ${(a.ms / 3600000).toFixed(1)} hours`}<br>${esc(coverage())}${mode === 'sample' ? '<br>Fictional sample artist and listening data.' : ''}</p><p class="detail-meta">Historical benchmark, not confirmed earnings or artist take-home.</p>${tracks.length ? `<ul class="track-list">${tracks.slice(0, 50).map(([name, plays]) => `<li><span>${esc(name)}</span><span>${number(plays)} plays</span></li>`).join('')}</ul>${tracks.length > 50 ? '<p class="detail-meta">Top 50 tracks shown.</p>' : ''}` : '<p class="detail-meta">Track details are unavailable for manual counts.</p>'}`;
   const share = result.plays ? a.plays / result.plays * 100 : 0;
   $('#artist-detail').insertAdjacentHTML('beforeend', `<p class="detail-meta"><strong>${share.toFixed(1)}% of your included plays</strong> · Your listening share, not royalty-pool share.</p><div class="artist-share-controls"><label>Share card style<select id="artist-card-style"><option value="listening">Listening card · no dollar estimate</option><option value="value">Value card · includes estimate</option></select></label><button class="button" id="artist-download">Download artist card ↓</button></div><p class="chart-note">Shares this artist’s top tracks and selected dates. No account identifiers or raw history.</p>`);
   if (mode === 'lastfm') {
@@ -454,6 +508,12 @@ $('#artist-rows').addEventListener('click', event => {
     $('#artist-detail .detail-total').textContent = `${number(a.plays)} self-reported plays`;
     $('#artist-detail .detail-meta').textContent = `${SERVICES[manualService]} · unpriced · duration and eligibility unknown`;
     $('#artist-detail').querySelectorAll('.detail-meta')[1].textContent = 'No validated benchmark for this service; no royalty estimate.';
+    $('#artist-card-style option[value=value]').remove();
+  }
+  if (mode === 'csv') {
+    $('#artist-detail .detail-total').textContent = `${number(a.plays)} events`;
+    $('#artist-detail .detail-meta').textContent = `User-provided CSV · ${SERVICES[selectedService]} self-reported · ${a.ms === null ? 'duration unknown' : (a.ms / 3600000).toFixed(1) + ' hours'}`;
+    $('#artist-detail').querySelectorAll('.detail-meta')[1].textContent = 'Unverified listening events. No royalty estimate.';
     $('#artist-card-style option[value=value]').remove();
   }
   $('#artist-dialog').showModal();
@@ -479,7 +539,7 @@ async function downloadCard(artist = null, style = 'value') {
   // Capture the selection before asynchronous image generation.
   const source = mode;
   const plays = artist ? artist.plays : result.plays;
-  const valueCard = (mode !== 'manual' || manualService === 'spotify') && (mode !== 'lastfm' || scenarioActive()) && style === 'value';
+  const valueCard = mode !== 'csv' && (mode !== 'manual' || manualService === 'spotify') && (mode !== 'lastfm' || scenarioActive()) && style === 'value';
   const canvas = document.createElement('canvas'); canvas.width = 1000; canvas.height = 1420;
   const ctx = canvas.getContext('2d'); if (!ctx) { notify('Your browser could not create a receipt image.'); return; }
   const theme = getComputedStyle(document.documentElement);
@@ -488,10 +548,10 @@ async function downloadCard(artist = null, style = 'value') {
   ['coral', 'lavender', 'mint', 'highlight', 'blue', 'pink', 'teal'].forEach((name, index) => { ctx.fillStyle = color(name); ctx.fillRect(135 + index * 104.28, 190, 105, 8); });
   const text = (value, x, y, font = '24px monospace', ink = color('ink'), maxWidth = 865 - x) => { ctx.fillStyle = ink; ctx.font = font; ctx.fillText(value, x, y, maxWidth); };
   const line = y => { ctx.strokeStyle = color('line'); ctx.setLineDash([7, 7]); ctx.beginPath(); ctx.moveTo(135, y); ctx.lineTo(865, y); ctx.stroke(); };
-  text('YOUR PAYOLA DRAFT', 135, 135, '22px monospace');
+  text('YOUR PAYOLA RECIEPT', 135, 135, '22px monospace');
   if (restoredSession) text('RESTORED SESSION · PROVENANCE NOT AUTHENTICATED', 135, 170, '15px Arial');
   text(artist ? 'Your artist.' : 'Good music.', 135, 242, '72px Georgia'); text(artist ? artist.name : 'Real impact.', 135, 322, artist ? '54px Georgia' : '72px Georgia'); line(365);
-  text(mode === 'lastfm' ? 'LAST.FM · RECORDED SCROBBLES' : mode === 'sample' ? 'SPOTIFY · FICTIONAL SAMPLE' : mode === 'manual' ? `${SERVICES[manualService]} · SELF-REPORTED PLAYS` : 'SPOTIFY · IMPORTED HISTORY', 135, 415, '19px monospace');
+  text(mode === 'lastfm' ? 'LAST.FM · RECORDED SCROBBLES' : mode === 'sample' ? 'SPOTIFY · FICTIONAL SAMPLE' : mode === 'manual' ? `${SERVICES[manualService]} · SELF-REPORTED PLAYS` : mode === 'csv' ? `${SERVICES[selectedService]} · CSV · UNPRICED` : 'SPOTIFY · IMPORTED HISTORY', 135, 415, '19px monospace');
   text(coverage(), 135, 453, '18px monospace');
   if (mode === 'lastfm') {
     text(lastfmAttribution.confirmed ? `${lastfmAttribution.label} · self-reported${scenarioActive() ? ' · hypothetical scenario' : ' · unpriced'}` : 'Mixed / unknown services · unpriced', 135, 482, '16px Arial');
@@ -499,7 +559,7 @@ async function downloadCard(artist = null, style = 'value') {
   }
   text(valueCard ? (mode === 'lastfm' ? 'Hypothetical benchmark scenario' : 'Estimated recording royalties') : mode === 'lastfm' ? 'Recorded scrobbles' : 'Included plays on repeat', 135, 525, '24px Arial');
   text(valueCard ? money(plays * RATE) : number(plays), 135, 642, '108px Arial');
-  text(valueCard ? `${number(plays)} ${mode === 'lastfm' ? 'SCROBBLES' : 'PLAYS'} · USD · $3 / 1,000` : `${artist?.ms == null ? (mode === 'lastfm' ? 'DURATION UNKNOWN' : 'SELF-REPORTED') : `${(artist.ms / 3600000).toFixed(1)} HOURS`} · LISTENING CARD`, 135, 700, '21px monospace'); line(745);
+  text(valueCard ? `${number(plays)} ${mode === 'lastfm' ? 'SCROBBLES' : 'PLAYS'} · USD · $3 / 1,000` : `${artist?.ms == null ? (mode === 'lastfm' || mode === 'csv' ? 'DURATION UNKNOWN' : 'SELF-REPORTED') : `${(artist.ms / 3600000).toFixed(1)} HOURS`} · LISTENING CARD`, 135, 700, '21px monospace'); line(745);
   if (artist) {
     [...artist.tracks.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).forEach(([name, count], index) => { text(`${index + 1}. ${name.slice(0, 35)}`, 135, 800 + index * 58, '27px Arial', color('ink'), 535); text(`${number(count)} ${mode === 'lastfm' ? 'scrobbles' : 'plays'}`, 700, 800 + index * 58, '21px monospace'); });
   } else result.artists.slice(0, 3).forEach((a, index) => { text(`${index + 1}. ${a.name.length > 32 ? `${a.name.slice(0, 31)}…` : a.name}`, 135, 800 + index * 58, '27px Arial', color('ink'), 535); text(valueCard ? money(a.plays * RATE) : `${number(a.plays)} ${mode === 'lastfm' ? 'scrobbles' : 'plays'}`, 700, 800 + index * 58, '24px monospace'); });
@@ -510,12 +570,12 @@ async function downloadCard(artist = null, style = 'value') {
     text('Not a fixed rate or confirmed artist take-home.', 135, 1100, '23px Arial');
     text('Plan, country, contracts, eligibility not adjusted.', 135, 1140, '20px Arial');
   } else { text('Your listening, not a royalty or payout statement.', 135, 1070, '23px Arial'); text(mode === 'lastfm' ? 'Data from Last.fm. Duration and eligibility unknown.' : 'Only included plays from the selected source.', 135, 1110, '21px Arial'); }
-  text('THANK YOU FOR LISTENING', 135, 1240, '23px monospace'); text('Payola Draft', 135, 1285, '20px Arial');
+  text('THANK YOU FOR LISTENING', 135, 1240, '23px monospace'); text('Payola Reciept', 135, 1285, '20px Arial');
   const logo = await loadCardLogo();
   if (logo) ctx.drawImage(logo, 785, 95, 80, 80);
   canvas.toBlob(blob => {
     if (!blob) { notify('Could not generate the image. Please try again.'); return; }
-    const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = artist ? `payola-draft-artist-${style}-${source}.png` : `payola-draft-${source}.png`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 10000); notify('Payola Draft downloaded. It includes the visible highlights, not your raw history.');
+    const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = artist ? `payola-reciept-artist-${style}-${source}.png` : `payola-reciept-${source}.png`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 10000); notify('Payola Reciept downloaded. It includes the visible highlights, not your raw history.');
   }, 'image/png');
 }
 function captureSession() {
@@ -553,7 +613,7 @@ $('#save-session').addEventListener('click', () => {
     const output = captureSession();
     if (!window.confirm('This session file contains listening history, artist/track names and dates. Keep it private. It is downloaded locally, not uploaded. Continue?')) return;
     const url = URL.createObjectURL(new Blob([output], { type: 'application/json' }));
-    const link = document.createElement('a'); link.href = url; link.download = 'payola-draft-session.json'; link.click();
+    const link = document.createElement('a'); link.href = url; link.download = 'payola-reciept-session.json'; link.click();
     backups.downloaded(); renderPreservation();
     setTimeout(() => URL.revokeObjectURL(url), 10000);
     notify('Session downloaded. Keep it private; it contains listening history.');

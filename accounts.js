@@ -162,7 +162,7 @@ export function initAccounts({ capture, restore, localBusy, canSave, clearLocal,
       if (!working && next) run(async () => { await checkProfile(); if (store) await checkCloud(); }, 'Checking your account…');
     });
     changed(client.auth.currentUser);
-    status('Connected to the shared Job Tracker / Payola Draft account service. No history has been uploaded.');
+    status('Connected to the shared Job Tracker / Payola Reciept account service. No history has been uploaded.');
     await checkProfile();
     if (store) await checkCloud();
   }, 'Connecting account service…'));

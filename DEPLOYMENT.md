@@ -1,4 +1,4 @@
-# Payola Draft private-beta deployment
+# Payola Reciept private-beta deployment
 
 Deploy the existing Node server as a **Web Service**, not a static site: the optional Last.fm proxy and integration configuration endpoints need server execution. No database is required. Nothing in this repository automatically purchases hosting, creates a service or publishes the app.
 

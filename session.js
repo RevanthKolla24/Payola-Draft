@@ -3,13 +3,13 @@ import { attribution } from './attribution.js';
 
 export const MAX_SESSION_FILE_BYTES = 25 * 1024 * 1024;
 const MAX_RECORDS = 200000;
-const fail = () => { throw new Error('Invalid or unsupported Payola Draft session.'); };
+const fail = () => { throw new Error('Invalid or unsupported Payola Reciept session.'); };
 const count = value => Number.isSafeInteger(value) && value >= 0 && value <= MAX_RECORDS * 100;
 const text = (value, max) => typeof value === 'string' && value.length <= max;
 
 // Reconstruct only known fields. Session data is untrusted, never executable or verified.
 export function validateSession(input) {
-  if (!input || input.format !== 'payola-draft-session' || input.version !== 1 || !['sample', 'import', 'lastfm', 'manual'].includes(input.mode)) fail();
+  if (!input || input.format !== 'payola-draft-session' || input.version !== 1 || !['sample', 'import', 'csv', 'lastfm', 'manual'].includes(input.mode)) fail();
   if (input.benchmark?.usdPerPlay !== RATE || input.benchmark?.year !== 2024 || input.benchmark?.source !== 'Duetti Spotify sample') fail();
   if (!['spotify', 'apple', 'youtube'].includes(input.selectedService)) fail();
   const filters = input.filters;
@@ -22,7 +22,8 @@ export function validateSession(input) {
     if (r.invalid === true && mode !== 'lastfm') return { invalid: true };
     if (!r.supported && mode !== 'lastfm') r = { ...r, artist: r.artist ?? '', track: r.track ?? '' };
     if (!validListeningRecord(r, mode === 'lastfm')) fail();
-    return { date: r.date, artist: r.artist, track: r.track, supported: r.supported, ms: r.ms, ...(mode === 'lastfm' ? { source: 'lastfm' } : {}), ...(r.eventKey ? { eventKey: r.eventKey } : {}) };
+    if ((mode === 'csv') !== (r.source === 'csv')) fail();
+    return { date: r.date, artist: r.artist, track: r.track, supported: r.supported, ms: r.ms, ...(['lastfm', 'csv'].includes(mode) ? { source: mode } : {}), ...(r.eventKey ? { eventKey: r.eventKey } : {}) };
   });
   let declaration = attribution(), loaded = null, manual = null;
   if (mode === 'lastfm') {
@@ -45,7 +46,7 @@ export function sessionText(state) {
   const data = { format: 'payola-draft-session', version: 1, benchmark: { source: 'Duetti Spotify sample', year: 2024, usdPerPlay: RATE }, ...state };
   validateSession(data);
   const output = JSON.stringify(data);
-  if (new TextEncoder().encode(output).byteLength > MAX_SESSION_FILE_BYTES) throw new Error('Session exceeds the 25 MB download/restore limit. Use CSV for a summary instead.');
+  if (new TextEncoder().encode(output).byteLength > MAX_SESSION_FILE_BYTES) throw new Error('Session exceeds the 25 MB download/restore limit. A summary CSV is not a full backup. Keep this tab open until you have preserved your history.');
   return output;
 }
 

@@ -10,6 +10,8 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicFiles = new Set(['index.html', 'styles.css', 'app.js', 'lib.js', 'importer.js', 'reports.js', 'import-job.js', 'import-worker.js', 'lastfm-client.js', 'apple.html', 'apple-client.js', 'apple.js', 'attribution.js', 'session.js', 'insights.js']);
 for (const name of ['logo', 'favicon-32', 'favicon-192', 'apple-touch-icon']) publicFiles.add(`assets/${name}.png`);
 for (const name of ['accounts.js', 'cloud.js', 'firebase-client.js', 'profile.js', 'preservation.js']) publicFiles.add(name);
+publicFiles.add('csv-history.js');
+publicFiles.add('workspace.css');
 const allowGlobal = createLimiter({ limit: 120 });
 const clients = new Map(); let activeRequests = 0;
 function integrationStatus() {
@@ -89,4 +91,4 @@ const server = http.createServer(async (req, res) => {
 const host = process.env.HOST || (process.env.NODE_ENV === 'production' ? '0.0.0.0' : '127.0.0.1');
 const port = Number(process.env.PORT || 3000);
 if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('PORT must be an integer between 0 and 65535.');
-server.listen(port, host, () => console.log(`Payola Draft listening on ${host}:${server.address().port}`));
+server.listen(port, host, () => console.log(`Payola Reciept listening on ${host}:${server.address().port}`));

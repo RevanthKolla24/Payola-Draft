@@ -31,7 +31,7 @@ $('#apple-prepare').addEventListener('click', async () => {
     if (!response.ok) throw new Error(data.error || 'Apple configuration unavailable.');
     developerToken = data.developerToken;
     const MusicKit = await sdk();
-    await MusicKit.configure({ developerToken, app: { name: 'Payola Draft', build: '1.0.0' } });
+    await MusicKit.configure({ developerToken, app: { name: 'Payola Reciept', build: '1.0.0' } });
     kit = MusicKit.getInstance(); $('#apple-authorize').hidden = false;
     status('Ready. Select Authorize with Apple to open Apple’s authorization flow. No history has been loaded.');
   } catch (error) { status(error.message); }

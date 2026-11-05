@@ -2,7 +2,7 @@
 
 ## Optional shared Firebase accounts
 
-Payola Draft uses the real Job Tracker Firebase identity project, with separate owner-only listening snapshots and explicit save/load/delete. The verified public web configuration is built in; no placeholder keys are needed. Firebase rules, authorized domain and browser-key referrer access were updated with owner approval on November 4, 2026, and a disposable real-project browser smoke test passed. **The candidate code still needs deployment to Render**; remove stale `ENABLE_FIREBASE_ACCOUNTS=false` and blank Firebase overrides there. Guest workflows and local session files work without signing in. See [the account setup, security rules, storage design, unresolved deletion risk and tests](./ACCOUNTS.md). Job Tracker's application has not been modified, and coordinated shared-account deletion remains unresolved.
+Payola Reciept uses the real Job Tracker Firebase identity project, with separate owner-only listening snapshots and explicit save/load/delete. The verified public web configuration is built in; no placeholder keys are needed. Firebase rules, authorized domain and browser-key referrer access were updated with owner approval on November 4, 2026, and a disposable real-project browser smoke test passed. **The candidate code still needs deployment to Render**; remove stale `ENABLE_FIREBASE_ACCOUNTS=false` and blank Firebase overrides there. Guest workflows and local session files work without signing in. See [the account setup, security rules, storage design, unresolved deletion risk and tests](./ACCOUNTS.md). Job Tracker's application has not been modified, and coordinated shared-account deletion remains unresolved.
 
 ## Local sessions and listening insights
 
@@ -22,7 +22,26 @@ Last.fm cannot verify the original streaming service or actual duration. The Las
 
 Only explicitly confirmed Spotify histories can opt into a hypothetical scenario using the existing Duetti 2024 Spotify sample benchmark ($0.003 per scrobble). This is not verified royalties, paid-stream eligibility, or artist take-home. Mixed, unknown, Apple Music, YouTube Music, and other-service histories remain unpriced. No allocations or listening durations are inferred. CSVs and images include source and scenario disclosures. Declarations are retained only in explicit session downloads or cloud snapshots. Optional device storage remembers a Last.fm username and, when requested, the Firebase sign-in; listening history is not automatically persisted.
 
-# Payola Draft
+# Payola Reciept
+
+### Guided local imports
+
+Imports also enforce a normalized-history size limit below the 25 MB full-session limit, reserving 64 KiB for metadata. A file that would exceed this limit is rejected before staging and does not consume hashes, duplicate accounting or byte allowance. Download your current session before starting a separate history with Replace. Summary CSVs are not full backups. Existing files above the download limit are not repaired or split automatically.
+
+The main page is organized into Add listening, Dashboard, and Keep your history workspaces. Optional accounts live beside local backups and can be opened from the header without connecting automatically. Source/exclusion details and the top-track list expand on demand. The main workspace styles are isolated in `workspace.css`; the experimental Apple preview retains its existing layout. Keyboard navigation includes a skip-to-dashboard link and pressed states for source controls.
+
+No login is required. Choose a service, then Spotify Extended Streaming History JSON/ZIP or **CSV history · unpriced**. File selections are parsed locally in a worker, reviewed, and committed only after **Confirm import**. Add checks duplicates against current history; Replace stages a new history without discarding the old one until confirmation. Failed files are reported individually; only successful files in the review are committed. Cancel discards pending work.
+
+CSV is a user-mapped interchange format, not a direct streaming-service integration. Map exact header names for date (`YYYY-MM-DD`, UTC), artist, track and optional actual milliseconds played. One row means one listening event; playlists, liked songs, track duration and general YouTube watch activity are not evidence of plays. Blank duration remains unknown. All CSV sources, including self-reported Spotify, are unpriced. Matching date/artist/title/duration across CSV files cannot distinguish every same-day listen. Native Apple privacy exports and YouTube Takeout support await validated sanitized fixtures.
+
+Sessions and explicit cloud snapshots preserve CSV source markers and unknown durations. Existing version-1 sessions remain supported; older app versions will reject the new CSV mode rather than price it. Guest history remains temporary—download a private session to preserve it. Artist sorting and Reset view change only the displayed view, not the source history. Help & Privacy is available on the main page.
+
+The display name is **Payola Reciept** (intentional project spelling). Downloaded
+files use the `payola-reciept` prefix. The internal `payola-draft-session` format
+identifier remains unchanged so existing local files and cloud snapshots continue
+to load. Repository/Render URLs, the Firebase project, account IDs and storage
+paths are unchanged by this branding update. The original artwork filename below
+is retained as an asset provenance reference, not the current display name.
 
 ## Visual identity
 

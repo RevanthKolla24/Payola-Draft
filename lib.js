@@ -11,7 +11,7 @@ export function validListeningRecord(r, lastfm = false) {
     && (!r.supported || (r.artist.trim() && r.track.trim()))
     && (r.eventKey === undefined || text(r.eventKey, 8192))
     && (lastfm ? r.source === 'lastfm' && r.ms === null && r.supported
-      : r.source === undefined && typeof r.ms === 'number' && Number.isFinite(r.ms) && r.ms >= 0 && r.ms <= 86400000));
+      : (r.source === undefined || r.source === 'csv') && ((r.source === 'csv' && r.ms === null) || (typeof r.ms === 'number' && Number.isFinite(r.ms) && r.ms >= 0 && r.ms <= 86400000))));
 }
 
 export function normalizeRecords(data) {
@@ -40,12 +40,15 @@ export function summarize(records, { from = '', to = '' } = {}) {
   const audit = { included: 0, short: 0, unsupported: 0, invalid: 0, outside: 0 };
   let ms = 0;
   const scrobbles = records.some(r => r.source === 'lastfm');
+  const csv = records.some(r => r.source === 'csv');
+  let unknownDuration = false;
   for (const r of records) {
     if (r.invalid) { audit.invalid++; continue; }
     if ((from && r.date < from) || (to && r.date > to)) { audit.outside++; continue; }
     if (!r.supported) { audit.unsupported++; continue; }
-    if (r.source !== 'lastfm' && r.ms < 30000) { audit.short++; continue; }
+    if (r.source !== 'lastfm' && r.ms !== null && r.ms < 30000) { audit.short++; continue; }
     audit.included++; ms += r.ms || 0;
+    if (r.ms === null) unknownDuration = true;
     const month = r.date.slice(0, 7);
     const bucket = months.get(month) || { month, plays: 0, ms: 0 };
     bucket.plays++; bucket.ms += r.ms || 0; months.set(month, bucket);
@@ -54,8 +57,8 @@ export function summarize(records, { from = '', to = '' } = {}) {
     artist.plays++; artist.ms += r.ms || 0;
     artist.tracks.set(r.track, (artist.tracks.get(r.track) || 0) + 1);
   }
-  if (scrobbles) { ms = null; for (const a of artists.values()) a.ms = null; for (const m of months.values()) m.ms = null; }
-  return { audit, ms, plays: audit.included, amount: scrobbles ? null : audit.included * RATE, months: [...months.values()].sort((a, b) => a.month.localeCompare(b.month)),
+  if (scrobbles || unknownDuration) { ms = null; for (const a of artists.values()) a.ms = null; for (const m of months.values()) m.ms = null; }
+  return { audit, ms, plays: audit.included, amount: scrobbles || csv ? null : audit.included * RATE, months: [...months.values()].sort((a, b) => a.month.localeCompare(b.month)),
     artists: [...artists.values()].sort((a, b) => b.plays - a.plays || a.name.localeCompare(b.name)) };
 }
 
