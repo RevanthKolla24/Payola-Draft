@@ -49,7 +49,7 @@ Spotify OAuth is not implemented in this release. Current development-mode limit
 
 Your listening. By the numbers.
 
-A dependency-free, Spotify-first listening royalty estimator. Built with HTML, CSS, native JavaScript modules, and a minimal Node.js static server. No app accounts, analytics, external fonts, or runtime packages. Spotify file imports are local; optional Last.fm mode uses a server-side API proxy.
+A guest-first, Spotify-first listening royalty estimator. Built with HTML, CSS, native JavaScript modules, and a minimal Node.js static server. No analytics, external fonts, or server runtime packages. Optional shared Firebase accounts load a pinned browser SDK only after an explicit connection. Spotify file imports are local; optional Last.fm mode uses a server-side API proxy.
 
 ## Run
 
@@ -85,7 +85,7 @@ npm run check
 
 Request Extended Streaming History from Spotify and select the downloaded ZIP or extracted audio-history JSON files. Required fields: `ts`, `ms_played`, `master_metadata_album_artist_name`, `master_metadata_track_name`, and `spotify_track_uri`. Standard account exports, Apple Music, and YouTube are not supported by the file importer. Last.fm is available through a separate API source. Unrelated JSON files in a ZIP receive individual feedback without blocking valid history files.
 
-Files are parsed in the current browser tab. No history is persisted, uploaded, or included in server logs. Normalization drops unrelated fields (including IP addresses and account identifiers). Clear data or refresh to discard history. SHA-256 fingerprints skip identical JSON contents even when renamed or extracted from another archive. Overlap checks compare full timestamps, track URI, artist/title, and duration, retaining the greatest occurrence count found in a single file. Repeated identical events within one file are retained. Invalid records without an identity cannot be deduplicated across different file contents; records with changed metadata/durations cannot reliably be matched. Coverage never guarantees history completeness.
+Files are parsed in the current browser tab. History is not automatically persisted, uploaded, or included in server logs. Only an explicit cloud Save uploads normalized listening history; original files are not uploaded. Normalization drops unrelated fields (including IP addresses and account identifiers). Clear data or refresh to discard the open view; saved cloud snapshots require separate deletion. SHA-256 fingerprints skip identical JSON contents even when renamed or extracted from another archive. Overlap checks compare full timestamps, track URI, artist/title, and duration, retaining the greatest occurrence count found in a single file. Repeated identical events within one file are retained. Invalid records without an identity cannot be deduplicated across different file contents; records with changed metadata/durations cannot reliably be matched. Coverage never guarantees history completeness.
 
 Select up to 100 MB compressed input and 100 MB expanded JSON per selection. ZIP entries are read in memory, never extracted to disk. The ZIP reader supports stored and raw-DEFLATE entries, verifies size and CRC32, and rejects encrypted, multi-part, ZIP64, unsupported-compression, or oversized archives. At most 5,000 ZIP directory entries are accepted. Browsers without `DecompressionStream('deflate-raw')` should unzip first. SHA-256 uses Web Crypto, requiring localhost or HTTPS. Reading, decompression, hashing, parsing, normalization and deduplication run in a dedicated module worker. Cancel terminates that worker and discards the entire pending selection; previously committed history is unchanged. Successful files in a completed selection are committed together, with feedback for rejected files. Session limits cap successfully imported JSON at 100 MB and retained records at 200,000. These are conservative data limits, not an exact RAM guarantee; transient parsing and structured-clone copies require additional memory. Summarization and rendering still run on the main thread. Browser storage is not used for histories. A Last.fm username may be remembered only through explicit opt-in. The development server binds only to localhost and serves an explicit allowlist of public files.
 
@@ -107,7 +107,7 @@ Sources:
 
 ## Next iterations
 
-Validate additional real-world export fixtures, profile summarization on large histories, and evaluate Apple Music formats before adding another service. User accounts and cloud persistence are intentionally outside this MVP.
+Validate additional real-world export fixtures, profile summarization on large histories, and evaluate Apple Music formats before adding another service. Optional shared accounts and explicit private cloud snapshots are implemented; see ACCOUNTS.md for deployment status, security boundaries and remaining cross-app verification.
 
 ## Comparisons and CSV export
 

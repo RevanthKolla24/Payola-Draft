@@ -30,7 +30,9 @@ let rememberedUser = '';
 let integrations = null;
 let integrationCheckFailed = false;
 let restoredSession = false;
+let restorationSource = '';
 let restoring = false;
+const busyChanged = () => document.dispatchEvent(new Event('payola:busy'));
 try { rememberedUser = localStorage.getItem('payola-lastfm-user') || ''; } catch { /* Storage is optional. */ }
 
 function renderAvailability() {
@@ -110,7 +112,8 @@ function renderHistoryInfo() {
   const observed = bounds(records);
   const period = (start, end) => start && end ? `${start} – ${end} UTC` : 'No dated records loaded';
   const details = [
-    ['Source', routes ? 'No route selected' : last ? 'Last.fm recorded scrobbles' : counts ? 'Manual, self-reported counts' : mode === 'sample' ? 'Fictional Spotify sample' : 'Local Spotify JSON/ZIP import'],
+    ['Source', routes ? 'No route selected' : last ? 'Last.fm recorded scrobbles' : counts ? 'Manual, self-reported counts' : mode === 'sample' ? 'Fictional Spotify sample' : restoredSession ? 'Spotify-format history · original files not authenticated' : 'Local Spotify JSON/ZIP import'],
+    ['Restoration', restoredSession ? `${restorationSource === 'cloud' ? 'Cloud snapshot' : 'Local session file'} · user-editable and unverified` : 'Not restored'],
     ['Service attribution', routes ? 'Not declared' : last ? lastfmLoaded ? attributionText(lastfmAttribution) : 'Not declared; load history first' : counts ? `${SERVICES[manualService]} · self-reported, not verified` : 'Spotify export format; paid-stream eligibility not verified'],
     ['Original request / declaration period', last && lastfmLoaded ? period(lastfmAttribution.from, lastfmAttribution.to) : 'Not applicable'],
     ['Observed record dates', counts ? 'Unavailable from manual counts' : period(observed.from, observed.to)],
@@ -121,7 +124,7 @@ function renderHistoryInfo() {
   $('#history-details').innerHTML = details.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join('');
   $('#history-audit').textContent = routes ? 'Choose a supported route above to begin. No history is loaded.' : $('#audit').textContent;
   $('#history-warning').textContent = routes ? 'Selecting a streaming service does not declare or verify the source of any listening history.' : counts ? 'Counts are self-reported. No duration, date coverage, or stream eligibility checks are possible.' : last ? 'Only previously scrobbled activity is available. Completeness and service attribution are not verified. Filters do not change the original declaration period; comparisons outside it have no service confirmation or established coverage.' : mode === 'sample' ? 'Fictional demonstration data, not your listening history.' : 'File coverage is not guaranteed complete. Missing dates do not prove zero listening; qualifying playback duration does not verify royalties.';
-  if (restoredSession) $('#history-warning').textContent += ' Restored from a user-editable local session; source and declarations are not authenticated. Any saved Last.fm dollar scenario was disabled; opt in again using the control below. Original import hashes/byte accounting were not restored; start a new import view to add files.';
+  if (restoredSession) $('#history-warning').textContent += ` Restored from a user-editable ${restorationSource === 'cloud' ? 'cloud snapshot' : 'local session file'}; source and declarations are not authenticated. Any saved Last.fm dollar scenario was disabled; opt in again using the control below. Original import hashes/byte accounting were not restored; start a new import view to add files.`;
   $('#restore-scenario').hidden = !restoredSession || mode !== 'lastfm' || !lastfmAttribution.confirmed || lastfmAttribution.service !== 'spotify' || scenarioActive();
 }
 function renderAttribution() {
@@ -312,6 +315,7 @@ async function fetchScrobbles(form) {
   const start = String(data.get('from')), end = String(data.get('to'));
   if (start > end) { notify('The start date must be on or before the end date.'); return; }
   const controller = new AbortController(); lastfmController = controller;
+  busyChanged();
   const status = $('#lastfm-status'), progress = $('#lastfm-progress'), button = form.querySelector('[type="submit"]');
   button.disabled = true; $('#cancel-lastfm').hidden = false; progress.hidden = false;
   try {
@@ -343,6 +347,7 @@ for (const type of ['dragover', 'dragleave', 'drop']) $('#input-panel').addEvent
 });
 function stopImport() {
   importWorker?.terminate(); importWorker = null; busy = false;
+  busyChanged();
   if ($('#history-files')) { $('#history-files').disabled = false; $('#history-files').value = ''; }
   if ($('#cancel-import')) $('#cancel-import').hidden = true;
   if ($('#import-progress')) $('#import-progress').hidden = true;
@@ -357,6 +362,7 @@ function importFiles(files) {
   $('#cancel-import')?.remove(); feedback.before(cancel);
   cancel.addEventListener('click', () => { stopImport(); feedback.textContent = 'Import cancelled. The whole current selection was discarded; previously imported history is unchanged.'; });
   busy = true; input.disabled = true;
+  busyChanged();
   const progress = $('#import-progress'); progress.hidden = false; progress.max = 1; progress.value = 0;
   feedback.textContent = 'Starting private background import… Previously imported history remains unchanged until this selection finishes.';
   try {
@@ -519,6 +525,7 @@ function applySession(restored, cloud = false) {
     $('#lastfm-status').textContent = 'Restored history. No username or live connection was restored. Refresh replaces it only after a successful request.';
   }
   restoredSession = true;
+  restorationSource = cloud ? 'cloud' : 'local';
   renderAvailability();
   notify(`${cloud ? 'Cloud' : 'Local'} session restored. History and attribution are user-editable and unverified.`);
 }
@@ -538,6 +545,7 @@ $('#restore-session').addEventListener('change', async event => {
   if (!file || restoring) return;
   if (busy || lastfmController) { notify('Finish or cancel pending work before restoring.'); return; }
   restoring = true;
+  busyChanged();
   try {
     if (file.size > MAX_SESSION_FILE_BYTES) throw new Error('Session exceeds the 25 MB restore limit.');
     const restored = parseSession(await file.text());
@@ -555,6 +563,11 @@ $('#restore-scenario').addEventListener('click', () => {
 render();
 checkIntegrations();
 initAccounts({ capture: captureSession, localBusy: () => busy || Boolean(lastfmController) || restoring,
+  clearLocal: () => {
+    if (busy || lastfmController || restoring) throw new Error('Signed out, but local work started before clearing. Finish or cancel it, then use Clear data.');
+    rememberedUser = ''; try { localStorage.removeItem('payola-lastfm-user'); } catch { /* Storage may be unavailable. */ }
+    setMode(selectedService === 'spotify' ? 'import' : 'routes');
+  },
   canSave: () => mode !== 'routes' && (mode === 'manual' ? Boolean(manual) : records.length > 0),
   restore: text => {
     if (busy || lastfmController || restoring) throw new Error('Finish pending work before loading cloud history.');

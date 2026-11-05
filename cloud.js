@@ -3,7 +3,7 @@ import { parseSession } from './session.js';
 export const CLOUD_CHUNKS = 16;
 export const CLOUD_CHUNK_BYTES = 256 * 1024;
 export const MAX_CLOUD_BYTES = CLOUD_CHUNKS * CLOUD_CHUNK_BYTES;
-export const conflict = () => new Error('Cloud history changed on another device. Check cloud status, then load it or explicitly replace it. Your local view is unchanged.');
+export const conflict = () => Object.assign(new Error('Cloud history changed on another device. Check cloud status, then load it or explicitly replace it. Your local view is unchanged.'), { code: 'cloud/conflict' });
 
 export function encodeCloud(text) {
   parseSession(text);
@@ -46,14 +46,22 @@ export function createCloudStore(sdk, db, uid, stillCurrent = () => true) {
   const guard = () => { if (!stillCurrent()) throw new Error('Account changed. Retry using the current account.'); };
   async function status() {
     guard(); const snapshot = await sdk.getDocFromServer(root); guard();
-    return snapshot.exists() ? validCloudMeta(snapshot.data()) : null;
+    if (!snapshot.exists()) return null;
+    const data = snapshot.data();
+    try { return validCloudMeta(data); }
+    catch {
+      throw Object.assign(new Error('Cloud metadata is damaged or unsupported. Download your local session for safety. A valid version can be reset using Delete; otherwise contact the project owner for administrative repair. No history was changed.'), {
+        code: 'cloud/metadata', recovery: Number.isSafeInteger(data?.version) && data.version > 0 && data.version < Number.MAX_SAFE_INTEGER ? { version: data.version, fingerprint: JSON.stringify(data) } : null
+      });
+    }
   }
-  async function write(text, expectedVersion, deleted = false) {
+  async function write(text, expectedVersion, deleted = false, recovery = null) {
     const payload = deleted ? { chunks: [], bytes: 0 } : encodeCloud(text);
     guard();
     const version = await sdk.runTransaction(db, async tx => {
       guard(); const current = await tx.get(root); guard();
-      const previous = current.exists() ? validCloudMeta(current.data()).version : 0;
+      if (recovery && (!deleted || !current.exists() || JSON.stringify(current.data()) !== recovery.fingerprint)) throw conflict();
+      const previous = current.exists() ? recovery ? current.data().version : validCloudMeta(current.data()).version : 0;
       if (previous !== expectedVersion) throw conflict();
       const version = previous + 1;
       if (!Number.isSafeInteger(version)) throw new Error('Cloud version limit reached.');
@@ -76,5 +84,5 @@ export function createCloudStore(sdk, db, uid, stillCurrent = () => true) {
     if (!latest || latest.version !== meta.version) throw conflict();
     return { text: decodeCloud(meta, chunks), version: meta.version };
   }
-  return { status, save: (text, expectedVersion) => write(text, expectedVersion), load, remove: expectedVersion => write('', expectedVersion, true) };
+  return { status, save: (text, expectedVersion) => write(text, expectedVersion), load, remove: expectedVersion => write('', expectedVersion, true), recover: recovery => write('', recovery.version, true, recovery) };
 }

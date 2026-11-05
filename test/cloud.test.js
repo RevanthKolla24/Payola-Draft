@@ -58,6 +58,31 @@ test('account changes stop cloud work before any write', async () => {
   await assert.rejects(store.save(text('No'), 0), /Account changed/);
   assert.equal(documents.size, 0);
 });
+test('damaged metadata recovery preserves version conflicts and clears all content', async () => {
+  const { sdk, documents } = fakeSDK();
+  const store = createCloudStore(sdk, {}, 'one');
+  const root = 'payolaUsers/one/state/current';
+  documents.set(root, { version: 8, schema: 99 });
+  let recovery;
+  await assert.rejects(store.status(), error => { recovery = error.recovery; return error.code === 'cloud/metadata' && recovery.version === 8; });
+  documents.set(root, { version: 8, schema: 98 });
+  await assert.rejects(store.recover(recovery), /another device/);
+  await assert.rejects(store.status(), error => { recovery = error.recovery; return true; });
+  assert.equal(await store.recover(recovery), 9);
+  assert.equal((await store.status()).deleted, true);
+  for (let i = 0; i < 16; i++) assert.equal(documents.get(`payolaUsers/one/chunks/${i}`).data, '');
+  documents.set(root, { schema: 99 });
+  await assert.rejects(store.status(), error => error.code === 'cloud/metadata' && error.recovery === null);
+});
+test('account changes during server reads discard loaded history', async () => {
+  const { sdk } = fakeSDK();
+  let current = true;
+  const store = createCloudStore(sdk, {}, 'one', () => current);
+  await store.save(text('Private'), 0);
+  const read = sdk.getDocFromServer;
+  sdk.getDocFromServer = async path => { const snapshot = await read(path); current = false; return snapshot; };
+  await assert.rejects(store.load(), /Account changed/);
+});
 test('real shared web config works without placeholders; explicit off and incomplete overrides fail closed', () => {
   const env = { ENABLE_FIREBASE_ACCOUNTS: 'true', FIREBASE_PROJECT_ID: 'job-tracker-project-c4e87', FIREBASE_AUTH_DOMAIN: 'job-tracker-project-c4e87.firebaseapp.com', FIREBASE_API_KEY: 'AIza' + 'x'.repeat(30), FIREBASE_APP_ID: '1:123:web:abc123', PRIVATE_KEY: 'secret' };
   assert.deepEqual(accountConfiguration({}), SHARED_FIREBASE_CONFIG);

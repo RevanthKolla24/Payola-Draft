@@ -26,10 +26,12 @@ const messageFor = error => {
   return messages[error.code] || error.message || 'Account operation failed. Local history is unchanged.';
 };
 
-export function initAccounts({ capture, restore, localBusy, canSave }) {
+export function initAccounts({ capture, restore, localBusy, canSave, clearLocal }) {
   let client, user = null, store, working = false, epoch = 0, cloudVersion = null;
   let localRevision = 0, savedRevision = -1;
   let identity = null;
+  let recovery = null;
+  let authIdentity = '';
   const status = text => { $('#account-status').textContent = text; };
   const cloudStatus = text => { $('#cloud-status').textContent = text; };
   const currentUID = () => user?.uid;
@@ -47,7 +49,10 @@ export function initAccounts({ capture, restore, localBusy, canSave }) {
     document.querySelectorAll('#account-form input, #account-form select').forEach(input => { input.disabled = working; });
     $('#cloud-save').disabled = working || localBusy() || !canSave() || !user?.emailVerified || cloudVersion === null;
     $('#cloud-load').disabled = working || localBusy() || !user?.emailVerified;
-    $('#cloud-delete').disabled = working || !user?.emailVerified || cloudVersion === null;
+    $('#cloud-delete').disabled = working || !user?.emailVerified || (cloudVersion === null && !recovery);
+    $('#cloud-delete').textContent = recovery ? 'Reset damaged Payola snapshot' : 'Delete cloud Payola history';
+    $('#account-clear-signout').disabled = working || localBusy();
+    $('#account-signout').disabled = working || ($('#account-clear-signout').checked && localBusy());
     $('#cloud-dirty').textContent = user?.emailVerified ? savedRevision === localRevision ? 'This view matches your last successful save/load in this tab.' : 'Local view is not saved. Cloud saves are explicit; there is no autosave.' : 'Guest mode remains local. Signing in does not upload or replace history.';
   }
   document.addEventListener('payola:view', event => {
@@ -55,11 +60,27 @@ export function initAccounts({ capture, restore, localBusy, canSave }) {
     if (!identity || next.some((value, index) => !Object.is(value, identity[index]))) { localRevision++; identity = next; }
     render();
   });
+  document.addEventListener('payola:busy', render);
+  $('#account-clear-signout').addEventListener('change', render);
+  document.querySelectorAll('[data-password-toggle]').forEach(button => button.addEventListener('click', () => {
+    const input = document.getElementById(button.dataset.passwordToggle);
+    const show = input.type === 'password'; input.type = show ? 'text' : 'password';
+    button.setAttribute('aria-pressed', String(show));
+    button.textContent = `${show ? 'Hide' : 'Show'} ${input.id === 'account-confirm' ? 'confirmation password' : 'password'}`;
+  }));
   async function run(task, pending = 'Working…') {
     if (working) return;
     working = true; status(pending); render();
-    try { await task(); } catch (error) { status(messageFor(error)); }
+    const timer = setTimeout(() => {
+      status('This is taking longer than expected. A pending write may still complete; do not retry it in another tab. Local downloads remain available. Waiting for confirmation…');
+    }, 12000);
+    try { await task(); } catch (error) {
+      if (error.code === 'cloud/conflict') { cloudVersion = null; recovery = null; $('#cloud-conflict').hidden = false; }
+      if (error.code === 'cloud/metadata') { cloudVersion = null; recovery = error.recovery; cloudStatus(messageFor(error)); }
+      status(messageFor(error));
+    }
     finally {
+      clearTimeout(timer);
       if ($('#account-status').textContent === pending) status('Ready. Your local history is unchanged.');
       working = false; render();
     }
@@ -67,13 +88,21 @@ export function initAccounts({ capture, restore, localBusy, canSave }) {
   async function checkCloud() {
     if (!store) return;
     const target = store, versionEpoch = epoch;
-    const meta = await target.status();
+    let meta;
+    try { meta = await target.status(); } catch (error) {
+      if (versionEpoch !== epoch) return;
+      if (error.code === 'cloud/metadata') { cloudVersion = null; recovery = error.recovery; }
+      throw error;
+    }
     if (versionEpoch !== epoch) return;
     cloudVersion = meta?.version || 0;
+    recovery = null;
     cloudStatus(meta && !meta.deleted ? `Cloud snapshot available · version ${meta.version} · ${(meta.bytes / 1048576).toFixed(2)} MiB. Load to view, or Save to explicitly replace it.` : 'No saved Payola history. Your jobs are separate and unchanged.');
   }
   function changed(next) {
-    epoch++; user = next; cloudVersion = null; savedRevision = -1;
+    authIdentity = `${next?.uid || ''}:${Boolean(next?.emailVerified)}`;
+    epoch++; user = next; cloudVersion = null; savedRevision = -1; recovery = null;
+    $('#cloud-conflict').hidden = true;
     const uid = next?.uid, versionEpoch = epoch;
     store = next?.emailVerified ? createCloudStore(client.dbSDK, client.db, uid, () => epoch === versionEpoch && currentUID() === uid) : null;
     cloudStatus('Check cloud status before saving.');
@@ -86,7 +115,7 @@ export function initAccounts({ capture, restore, localBusy, canSave }) {
     const { connectFirebase } = await import('./firebase-client.js');
     client = await connectFirebase(config.firebase);
     client.authSDK.onAuthStateChanged(client.auth, next => {
-      if (next?.uid === user?.uid && Boolean(next?.emailVerified) === Boolean(user?.emailVerified)) return;
+      if (`${next?.uid || ''}:${Boolean(next?.emailVerified)}` === authIdentity) return;
       changed(next);
       if (!working && store) run(checkCloud, 'Checking your cloud history…');
     });
@@ -135,7 +164,7 @@ export function initAccounts({ capture, restore, localBusy, canSave }) {
       changed(client.auth.currentUser);
       $('#account-password').value = ''; $('#account-confirm').value = '';
       if (store) {
-        try { await bounded(checkCloud(), 'Cloud status timed out. Check cloud status to retry.'); }
+        try { await checkCloud(); }
         catch (error) { cloudStatus(messageFor(error)); status('Signed in successfully. Cloud access needs attention; your local history is unchanged.'); }
       }
     }, $('#account-action').value === 'signup' ? 'Creating your shared account…' : 'Signing in…');
@@ -148,20 +177,33 @@ export function initAccounts({ capture, restore, localBusy, canSave }) {
   }));
   $('#account-verify').addEventListener('click', () => run(async () => { await client.authSDK.sendEmailVerification(user); status('Verification email requested. Check your inbox and spam folder.'); }));
   $('#account-refresh').addEventListener('click', () => run(async () => {
-    await client.authSDK.reload(user); await client.authSDK.getIdToken(user, true); changed(client.auth.currentUser);
+    const target = user;
+    await client.authSDK.reload(target); await client.authSDK.getIdToken(target, true);
+    if (client.auth.currentUser?.uid !== target.uid) throw new Error('Account changed. Retry using the current account.');
+    changed(client.auth.currentUser);
     status(user.emailVerified ? 'Email verified. Cloud controls are available.' : 'Email is not verified yet.');
     if (store) await checkCloud();
   }));
   $('#account-signout').addEventListener('click', () => run(async () => {
+    const clear = $('#account-clear-signout').checked;
+    if (clear && localBusy()) throw new Error('Finish or cancel local work before clearing this device.');
+    if (clear && !window.confirm('Sign out and clear the open listening view and remembered Last.fm username? Download a session first to keep it. Cloud history and jobs are not deleted.')) return;
     await client.authSDK.signOut(client.auth); changed(null);
-    status('Signed out on this website. The open local history remains in this tab; use Clear data or close it on a shared device. Job Tracker has its own sign-in session.');
+    if (clear) clearLocal();
+    $('#account-clear-signout').checked = false;
+    status(clear ? 'Signed out and cleared local listening history and the saved username. Cloud history, downloaded files and Job Tracker are unchanged.' : 'Signed out on this website. The open local history remains in this tab; use Clear data or close it on a shared device. Job Tracker has its own sign-in session.');
   }));
   $('#cloud-check').addEventListener('click', () => run(async () => { await checkCloud(); status('Cloud status checked. Your local view is unchanged.'); }, 'Checking cloud status…'));
   $('#cloud-save').addEventListener('click', () => run(async () => {
-    if (!store || localBusy() || cloudVersion === null) throw new Error('Finish pending work and check cloud status first.');
+    if (!store || localBusy() || !canSave() || cloudVersion === null) throw new Error('Load history, finish pending work and check cloud status first.');
     const text = capture(), revision = localRevision, target = store;
     if (!window.confirm('Upload this normalized listening history, dates, tracks and source declarations to Firebase? This replaces this account’s Payola snapshot, not its jobs. Original import files and credentials are not uploaded.')) return;
-    cloudVersion = await target.save(text, cloudVersion); savedRevision = revision;
+    const expectedVersion = cloudVersion;
+    cloudVersion = null;
+    try { cloudVersion = await target.save(text, expectedVersion); }
+    catch (error) { cloudStatus('Save was not confirmed. Check cloud status before retrying; a pending write may still complete. Local history is unchanged.'); throw error; }
+    savedRevision = revision;
+    $('#cloud-conflict').hidden = true;
     cloudStatus(`Saved to your account · version ${cloudVersion}. Use Load saved history on another device.`);
     status('Cloud save succeeded. Local downloads still work.');
   }, 'Saving your history…'));
@@ -172,12 +214,18 @@ export function initAccounts({ capture, restore, localBusy, canSave }) {
     if (revision !== localRevision || localBusy()) throw new Error('Local view changed while loading. Retry; nothing was replaced.');
     if (!window.confirm('Replace the open view with your cloud snapshot? History remains user-editable, not verified. Last.fm dollar scenarios require a fresh opt-in.')) return;
     restore(loaded.text); cloudVersion = loaded.version; savedRevision = localRevision;
+    $('#cloud-conflict').hidden = true;
     cloudStatus(`Loaded cloud version ${loaded.version}.`); status('Saved history loaded. No histories were merged.');
   }, 'Loading saved history…'));
   $('#cloud-delete').addEventListener('click', () => run(async () => {
-    if (!store || cloudVersion === null) throw new Error('Check cloud status first.');
+    if (!store || (cloudVersion === null && !recovery)) throw new Error('Check cloud status first.');
     if (!window.confirm('Delete this account’s cloud Payola listening snapshot? This does not delete your local view, Job Tracker jobs, or the shared account.')) return;
-    cloudVersion = await store.remove(cloudVersion); savedRevision = -1;
+    const target = store, expectedVersion = cloudVersion, repair = recovery;
+    cloudVersion = null; recovery = null;
+    try { cloudVersion = repair ? await target.recover(repair) : await target.remove(expectedVersion); }
+    catch (error) { cloudStatus('Deletion was not confirmed. Check cloud status before retrying. Local history is unchanged.'); throw error; }
+    savedRevision = -1;
+    $('#cloud-conflict').hidden = true;
     cloudStatus('Cloud Payola history deleted. Local view and jobs are unchanged.');
     status('Cloud deletion succeeded. Your local view is unchanged.');
   }, 'Deleting cloud Payola history…'));

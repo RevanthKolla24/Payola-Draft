@@ -23,10 +23,12 @@
       <label>Action<select id="account-action"><option value="signin">Sign in</option><option value="signup">Create shared account</option></select></label>
       <label>Email<input id="account-email" type="email" autocomplete="username" maxlength="254" required></label>
       <label>Password<input id="account-password" type="password" autocomplete="current-password" minlength="1" maxlength="128" required></label>
+      <button class="text-button" type="button" data-password-toggle="account-password" aria-controls="account-password" aria-pressed="false">Show password</button>
       <fieldset id="account-name-fields" hidden><legend>New shared account</legend>
         <label>First name<input id="account-first" autocomplete="given-name" maxlength="100"></label>
         <label>Last name<input id="account-last" autocomplete="family-name" maxlength="100"></label>
         <label>Confirm password<input id="account-confirm" type="password" autocomplete="new-password" maxlength="128"></label>
+        <button class="text-button" type="button" data-password-toggle="account-confirm" aria-controls="account-confirm" aria-pressed="false">Show confirmation password</button>
         <p class="chart-note">At least 12 characters. Do not use leading or trailing spaces; Job Tracker trims them.</p>
       </fieldset>
       <label class="remember-label"><input type="checkbox" id="account-remember"> Remember this account on this device (not for shared computers)</label>
@@ -38,8 +40,11 @@
     <button class="text-button" id="account-verify">Resend verification email</button>
     <button class="text-button" id="account-refresh">I verified my email</button>
     <button class="text-button" id="account-signout">Sign out of Payola Draft</button>
+    <label class="remember-label"><input type="checkbox" id="account-clear-signout"> Also clear listening history and saved Last.fm username from this tab/device when signing out (cloud history and jobs stay unchanged)</label>
   </div>
   <div id="cloud-controls" hidden>
+    <p class="chart-note" id="cloud-size">One cloud snapshot · 4 MiB maximum. Larger histories can use local session downloads (25 MB maximum).</p>
+    <p id="cloud-conflict" role="status" hidden>Another device changed your snapshot. Keep working locally without uploading, Load saved history to use the cloud version, or Check cloud status then explicitly Save to replace it. Download your local session first if needed.</p>
     <button class="text-button" id="cloud-check">Check cloud status</button>
     <button class="button" id="cloud-save">Save current history to account</button>
     <button class="text-button" id="cloud-load">Load saved history</button>

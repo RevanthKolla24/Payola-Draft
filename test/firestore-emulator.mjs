@@ -42,11 +42,17 @@ try {
   await assertFails(sdk.setDoc(sdk.doc(a, 'payolaUsers', 'alice', 'chunks', '16'), { version: 1, data: 'bad' }));
   await assertFails(sdk.setDoc(sdk.doc(a, 'payolaUsers', 'alice', 'chunks', '0'), { version: 1, data: 'standalone overwrite' }));
   assert.equal(await store.remove(1), 2);
+  await environment.withSecurityRulesDisabled(async context => {
+    await sdk.setDoc(sdk.doc(context.firestore(), 'payolaUsers', 'alice', 'state', 'current'), { version: 10, schema: 99 });
+  });
+  let recovery;
+  await assert.rejects(store.status(), error => { recovery = error.recovery; return error.code === 'cloud/metadata'; });
+  assert.equal(await store.recover(recovery), 11);
   await assert.rejects(store.load(), /No saved/);
   const savedChunk = await sdk.getDoc(sdk.doc(a, 'payolaUsers', 'alice', 'chunks', '0'));
   assert.equal(savedChunk.data().data, '');
   const otherDevice = createCloudStore(sdk, user('alice'), 'alice');
-  assert.equal(await otherDevice.save(session, 2), 3);
+  assert.equal(await otherDevice.save(session, 11), 12);
   assert.equal((await store.load()).text, session);
   console.log('PASS: emulator rules, profiles, admin self-promotion denial, jobs, owner-only cloud snapshots, cross-device save/load/conflict/delete');
 } finally { await environment.cleanup(); }
