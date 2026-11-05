@@ -2,6 +2,15 @@
 
 ## Production configuration verified November 4, 2026
 
+**November 5 status update:** a read-only production review confirmed that live
+`/api/accounts` now returns `enabled: true`, the deployed Firestore rules match this
+repository, and the browser key still has website/API restrictions. Earlier notes
+below describing Render as disabled or awaiting deployment are historical, not a
+current deployment assertion. The deployed commit and complete real-email/cross-app
+flows still need verification. See `SECURITY.md` for the secret-scanning alert
+review and the remaining broad API-allowlist follow-up; no key was revoked or alert
+dismissed in that review.
+
 The candidate application now includes the real public web configuration verified using Firebase CLI for `job-tracker-project-c4e87`. No keys need to be copied to Render for the normal shared-project setup. Accounts are enabled by default; `ENABLE_FIREBASE_ACCOUNTS=false` is an explicit emergency off switch. If overriding configuration, all four public Firebase environment variables are required; partial/blank overrides disable accounts instead of mixing projects.
 
 With explicit owner approval, the replacement `firestore.rules` was compiled and published to the real project, the Payola Render hostname was added to Firebase Authentication authorized domains, and that origin was added to the existing web key's browser referrer allowlist. Existing Job Tracker referrers and all API target restrictions were preserved. No index deployment, billing change, or Job Tracker application deployment was performed. Pre-change rules, domains and key restrictions were backed up under `/tmp/payola-firebase-production-backup` on the development machine; keep a durable private copy if needed because temporary storage is not permanent.
