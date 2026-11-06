@@ -43,6 +43,24 @@ test('CSV import previews, failures and duplicates never mutate input', async ()
   const invalid = await runImport([new File(['artist,track\nA,T'], 'library.csv')], { ...result, csv: true });
   assert.deepEqual(invalid.records, result.records); assert.equal(invalid.added, 0);
 });
+test('CSV generated playback identities are validated before import and remain backup-compatible', async () => {
+  const makeRow = (artist, track) => `2026-01-01,${artist},${track},60000`;
+  const oversized = makeRow('\u0001'.repeat(500), '\u0001'.repeat(1000));
+  const valid = makeRow('\u0001'.repeat(300), '\u0001'.repeat(1000));
+  const input = 'date,artist,track,ms_played\n' + oversized + '\n' + valid;
+  const records = normalizeCSV(input);
+  assert.deepEqual(records[0], { invalid: true });
+  assert.ok(records[1].eventKey.length <= 8192);
+  const imported = await runImport([new File([input], 'escaped.csv')], empty());
+  assert.equal(imported.previews[0].invalid, 1);
+  assert.equal(imported.previews[0].included, 1);
+  const output = sessionText({ mode: 'csv', selectedService: 'spotify', records: imported.records, filters: { from: '', to: '' }, duplicates: imported.duplicates });
+  assert.deepEqual(parseSession(output).records, imported.records);
+  const rejected = await runImport([new File(['date,artist,track,ms_played\n' + oversized], 'invalid.csv')], empty());
+  assert.equal(rejected.previews[0].status, 'rejected');
+  assert.equal(rejected.records.length, 0);
+});
+
 test('CSV sessions preserve source/unknown duration and reject disguised priced modes', () => {
   const state = { mode: 'csv', selectedService: 'apple', records: normalizeCSV(csv), filters: { from: '', to: '' }, duplicates: 0 };
   const output = sessionText(state), restored = parseSession(output);

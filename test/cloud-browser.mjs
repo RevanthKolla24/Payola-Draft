@@ -1,3 +1,4 @@
+import { visitControl } from './page-helpers.mjs';
 import assert from 'node:assert/strict';
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const base = process.env.TEST_URL || 'http://127.0.0.1:3001';
@@ -12,12 +13,13 @@ export async function connectFirebase() {
   const dbSDK = {
     doc: (_, ...path) => path.join('/'), serverTimestamp: () => Date.now(),
     setDoc: async () => { throw new Error('Simulated profile failure'); },
-    getDocFromServer: async path => { if (window.testReadDelay) await new Promise(resolve => setTimeout(resolve, window.testReadDelay)); if (window.testReadFailure) throw new Error('Simulated status failure'); const data = JSON.parse(localStorage.getItem('cloud:' + path) || 'null'); return { exists: () => data !== null, data: () => data }; },
+    getDocFromServer: async path => { if (window.testReadTimeout) { window.testReadTimeout = false; throw Object.assign(new Error('Account read timed out. Retry when connected.'), { code: 'account/read-timeout' }); } if (window.testReadDelay) await new Promise(resolve => setTimeout(resolve, window.testReadDelay)); if (window.testReadFailure) throw new Error('Simulated status failure'); const data = JSON.parse(localStorage.getItem('cloud:' + path) || 'null'); return { exists: () => data !== null, data: () => data }; },
     runTransaction: async (_, fn) => {
       if (window.testWriteFailure) throw new Error('Simulated lost response');
       if (window.testWriteDelay) await new Promise(resolve => setTimeout(resolve, window.testWriteDelay));
+      if (window.testLateWriteFailure) throw Object.assign(new Error('Stale transaction conflict'), { code: 'cloud/conflict' });
       const pending = [];
-      const result = await fn({ get: dbSDK.getDocFromServer, set: (path, data) => pending.push([path, data]) });
+      const result = await fn({ get: dbSDK.getDocFromServer, set: (path, data) => pending.push([path, data]), update: (path, data) => pending.push([path, { ...JSON.parse(localStorage.getItem('cloud:' + path)), ...data }]) });
       if (window.testProfileFailure && pending.some(([path]) => path.startsWith('users/'))) throw new Error('Simulated profile failure');
       for (const [path, data] of pending) localStorage.setItem('cloud:' + path, JSON.stringify(data));
       return result;
@@ -25,13 +27,17 @@ export async function connectFirebase() {
   };
   const authSDK = {
     browserLocalPersistence: {}, inMemoryPersistence: {}, setPersistence: async () => {},
-    onAuthStateChanged: (_, cb) => { callback = cb; cb(auth.currentUser); },
+    onAuthStateChanged: () => { throw new Error('Production token observer must be used'); },
+    onIdTokenChanged: (_, cb) => { window.testTokenObserver = true; callback = cb; cb(auth.currentUser); },
     signInWithEmailAndPassword: async () => { await new Promise(resolve => setTimeout(resolve, 100)); auth.currentUser = user; callback(user); return { user }; },
-    createUserWithEmailAndPassword: async () => { window.testProfileFailure = true; user.emailVerified = false; auth.currentUser = user; callback(user); return { user }; },
+    createUserWithEmailAndPassword: async () => { window.testProfileFailure = !window.testProfileSuccess; user.emailVerified = false; auth.currentUser = user; callback(user); return { user }; },
     updateProfile: async () => {},
+    EmailAuthProvider: { credential: (email, password) => ({ email, password }) },
+    reauthenticateWithCredential: async (_, credential) => { if (credential.password !== 'valid-password') throw Object.assign(new Error('Wrong password'), { code: 'auth/invalid-credential' }); window.testReauthenticated = true; },
+    updatePassword: async (_, password) => { if (!window.testReauthenticated) throw new Error('Reauthentication required'); window.testUpdatedPasswordLength = password.length; },
     signOut: async () => { auth.currentUser = null; callback(null); },
-    reload: async target => { target.emailVerified = true; }, getIdToken: async () => 'verified',
-    sendPasswordResetEmail: async () => {}, sendEmailVerification: async () => {}
+    reload: async target => { target.emailVerified = true; }, getIdToken: async () => { callback(auth.currentUser); return 'verified'; },
+    sendPasswordResetEmail: async (_, email, settings) => { window.testResetRequest = { email, settings }; }, sendEmailVerification: async (_, settings) => { if (window.testVerificationFailure) throw new Error('Simulated verification delivery failure'); window.testVerificationSettings = settings; }
   };
   return { auth, authSDK, db: {}, dbSDK };
 }`;
@@ -45,42 +51,142 @@ try {
   const first = await context.newPage(); await first.goto(base);
   assert.equal(requests.some(url => url.includes('firebase-client') || url.includes('/api/accounts')), false, 'Guest must not connect to Firebase');
   async function signIn(page) {
-    await page.locator('#accounts > summary').click();
+    await visitControl(page, '#accounts > summary');
+    if (await page.locator('#accounts').getAttribute('open') === null) await page.locator('#accounts > summary').click();
+    await visitControl(page, '#account-connect');
     await page.locator('#account-connect').click();
+    await visitControl(page, '#account-email');
     await page.locator('#account-email').fill('test@example.com');
+    await visitControl(page, '#account-reset');
     await page.locator('#account-reset').click();
     await page.waitForFunction(() => document.querySelector('#account-status').textContent.includes('reset email has been requested'));
+    await visitControl(page, '#account-password');
     await page.locator('#account-password').fill('valid-password');
+    await visitControl(page, '[data-password-toggle="account-password"]');
     await page.locator('[data-password-toggle="account-password"]').click();
     assert.equal(await page.locator('#account-password').getAttribute('type'), 'text');
+    await visitControl(page, '[data-password-toggle="account-password"]');
     await page.locator('[data-password-toggle="account-password"]').click();
     assert.equal(await page.locator('#account-password').getAttribute('type'), 'password');
+    await visitControl(page, '#account-submit');
     await page.locator('#account-submit').click();
     assert.equal(await page.locator('#accounts').getAttribute('aria-busy'), 'true');
     assert.match(await page.locator('#account-status').textContent(), /Signing in/);
     await page.waitForFunction(() => !document.querySelector('#cloud-save').disabled);
   }
+  await first.locator('nav a[href="/receipt"]').click();
+  await first.locator('#keep-receipt').click();
+  assert.equal(await first.locator('#receipt-editor').isVisible(), true);
+  await first.locator('#receipt-title').fill('My sample collection');
+  assert.equal(requests.some(url => url.includes('firebase-client') || url.includes('/api/accounts')), false, 'Preparing a receipt must remain local');
   await signIn(first);
+  assert.equal(await first.locator('#receipt-title').inputValue(), 'My sample collection', 'Guest draft survives sign-in');
+  assert.equal(await first.evaluate(() => Object.keys(localStorage).some(key => key.includes('/receipts/'))), false, 'Sign-in must not save receipt');
+  await first.locator('#collection-refresh').click();
+  await first.waitForFunction(() => !document.querySelector('#collection-save').disabled);
+  await first.locator('#receipt-note').fill('<script>private note</script>');
+  await first.locator('#collection-theme').selectOption('midnight');
+  first.once('dialog', dialog => dialog.dismiss());
+  await first.locator('#collection-save').click();
+  await first.waitForFunction(() => document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
+  assert.equal(await first.locator('.collection-card').count(), 0);
+  first.once('dialog', dialog => dialog.accept());
+  await first.locator('#collection-save').click();
+  await first.waitForFunction(() => document.querySelectorAll('.collection-card').length === 1 && document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
+  assert.equal(await first.locator('.collection-card h4').textContent(), 'My sample collection');
+  assert.equal(await first.locator('.collection-card script').count(), 0);
+  assert.equal(await first.locator('#unsaved-history').isVisible(), false, 'Sample receipts do not change preservation tracking');
+  await first.locator('.collection-card button', { hasText: 'Rename / edit note' }).click();
+  await first.locator('#receipt-title').fill('Renamed moment');
+  first.once('dialog', dialog => dialog.accept());
+  await first.locator('#collection-save').click();
+  await first.waitForFunction(() => document.querySelector('.collection-card h4')?.textContent === 'Renamed moment' && document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
+  const downloadPromise = first.waitForEvent('download');
+  await first.locator('.collection-card button', { hasText: 'Download SVG' }).click();
+  assert.equal((await downloadPromise).suggestedFilename(), 'payola-saved-receipt.svg');
+  first.once('dialog', dialog => dialog.accept());
+  await first.locator('.collection-card button', { hasText: 'Delete' }).click();
+  await first.waitForFunction(() => document.querySelectorAll('.collection-card').length === 0 && document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
+  assert.equal(await first.evaluate(() => JSON.parse(localStorage.getItem('cloud:payolaUsers/test-user/receipts/0')).deleted), true);
+  assert.equal(await first.evaluate(() => window.testTokenObserver), true);
   // A failed refresh must discard previously acknowledged write/delete versions.
   await first.evaluate(() => { window.testReadFailure = true; });
+  await visitControl(first, '#cloud-check');
   await first.locator('#cloud-check').click();
   await first.waitForFunction(() => document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
   assert.equal(await first.locator('#cloud-save').isDisabled(), true);
   assert.equal(await first.locator('#cloud-delete').isDisabled(), true);
   await first.evaluate(() => { window.testReadFailure = false; });
+  await visitControl(first, '#cloud-check');
   await first.locator('#cloud-check').click();
   await first.waitForFunction(() => !document.querySelector('#cloud-save').disabled);
   assert.equal(await first.locator('#account-profile-form').isVisible(), true);
+  await visitControl(first, '#profile-first');
+  await visitControl(first, '#profile-last');
   await first.locator('#profile-first').fill('Repair'); await first.locator('#profile-last').fill('User');
+  await visitControl(first, '#account-profile-form [type="submit"]');
   await first.locator('#account-profile-form [type="submit"]').click();
-  await first.waitForFunction(() => document.querySelector('#account-profile-status').textContent.includes('created'));
+  await first.waitForFunction(() => document.querySelector('#account-profile-status').textContent.includes('exists'));
   assert.deepEqual(await first.evaluate(() => {
     const { createdAt, ...profile } = JSON.parse(localStorage.getItem('cloud:users/test-user')); return profile;
   }), { firstName: 'Repair', lastName: 'User', email: 'test@example.com' });
+  await visitControl(first, '#account-profile-check');
   await first.locator('#account-profile-check').click();
   await first.waitForFunction(() => document.querySelector('#account-profile-status').textContent.includes('exists'));
   assert.equal(await first.locator('#account-profile-form').isVisible(), false);
+  // Explicit profile editing preserves opaque role and custom fields.
+  await first.evaluate(() => {
+    const key = 'cloud:users/test-user', data = JSON.parse(localStorage.getItem(key));
+    localStorage.setItem(key, JSON.stringify({ ...data, role: 'admin', unrelated: ['preserve'] }));
+  });
+  await first.locator('#edit-first').fill('Edited');
+  await first.locator('#edit-last').fill('Listener');
+  await first.locator('#account-edit-form [type="submit"]').click();
+  await first.waitForFunction(() => document.querySelector('#account-edit-status').textContent.includes('Shared names saved'));
+  assert.deepEqual(await first.evaluate(() => {
+    const p = JSON.parse(localStorage.getItem('cloud:users/test-user')); return { firstName: p.firstName, role: p.role, unrelated: p.unrelated };
+  }), { firstName: 'Edited', role: 'admin', unrelated: ['preserve'] });
+  // Signed-in recovery uses a fixed return URL; password change reauthenticates.
+  await first.locator('#account-security-reset').click();
+  await first.waitForFunction(() => document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
+  assert.equal(await first.evaluate(() => window.testResetRequest.settings.url), base + '/account?emailAction=reset');
+  await first.locator('#account-security > details > summary').click();
+  await first.locator('#security-current').fill('wrong-password');
+  await first.locator('#security-new').fill('new-valid-password');
+  await first.locator('#security-confirm').fill('new-valid-password');
+  await first.locator('#account-password-form [type="submit"]').click();
+  await first.waitForFunction(() => document.querySelector('#account-status').textContent.includes('incorrect'));
+  assert.equal(await first.evaluate(() => window.testUpdatedPasswordLength), undefined);
+  assert.equal(await first.locator('#security-current').inputValue(), '');
+  await first.locator('#security-current').fill('valid-password');
+  await first.locator('#security-new').fill('new-valid-password');
+  await first.locator('#security-confirm').fill('new-valid-password');
+  await first.locator('#account-password-form [type="submit"]').click();
+  await first.waitForFunction(() => document.querySelector('#account-security-status').textContent.includes('Password updated'));
+  assert.equal(await first.evaluate(() => window.testUpdatedPasswordLength), 18);
+  assert.equal(await first.locator('#security-new').inputValue(), '');
+  // Account changes during an operation automatically initialize the latest identity.
+  await first.locator('nav a[href="/receipt"]').click();
+  await first.locator('#keep-receipt').click();
+  await first.locator('#receipt-title').fill('Do not leak to another account');
+  await first.evaluate(() => { window.testReadDelay = 100; });
+  await first.locator('#collection-refresh').click();
+  await first.evaluate(() => window.testAuthChange({ uid: 'other-user', email: 'other@example.com', emailVerified: true }));
+  await first.waitForFunction(() => !document.querySelector('#cloud-save').disabled);
+  assert.equal(await first.locator('#receipt-editor').isVisible(), false, 'Account switch clears pending receipt');
+  assert.equal(await first.locator('.collection-card').count(), 0, 'Stale collection read cannot populate new account');
+  assert.match(await first.locator('#account-identity').textContent(), /other@example.com/);
+  await first.evaluate(() => { window.testReadDelay = 0; window.testAuthChange({ uid: 'test-user', email: 'test@example.com', emailVerified: true }); });
+  await first.waitForFunction(() => !document.querySelector('#cloud-save').disabled);
+  await first.evaluate(() => { window.testReadTimeout = true; });
+  await first.locator('#cloud-check').click();
+  await first.waitForFunction(() => document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
+  assert.match(await first.locator('#account-status').textContent(), /timed out/);
+  assert.equal(await first.locator('#cloud-check').isEnabled(), true);
+  await first.locator('#cloud-check').click();
+  await first.waitForFunction(() => !document.querySelector('#cloud-save').disabled);
   await first.evaluate(() => { window.testReadFailure = true; });
+  await visitControl(first, '#account-profile-check');
   await first.locator('#account-profile-check').click();
   await first.waitForFunction(() => document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
   assert.match(await first.locator('#account-profile-status').textContent(), /could not be checked/);
@@ -88,11 +194,14 @@ try {
   await first.evaluate(() => { window.testReadFailure = false; });
   assert.match(await first.locator('#cloud-status').textContent(), /No saved/);
   assert.equal(await first.locator('#stat-plays').textContent(), '2,727');
+  await visitControl(first, '#cloud-save');
   first.once('dialog', dialog => dialog.dismiss()); await first.locator('#cloud-save').click();
   assert.equal(await first.evaluate(() => localStorage.getItem('cloud:payolaUsers/test-user/state/current')), null);
+  await visitControl(first, '#cloud-save');
   first.once('dialog', dialog => dialog.accept()); await first.locator('#cloud-save').click();
   await first.waitForFunction(() => document.querySelector('#cloud-status').textContent.includes('version 1'));
   assert.match(await first.locator('#cloud-dirty').textContent(), /matches/);
+  await visitControl(first, '#restore-session');
   await first.locator('#restore-session').setInputFiles({ name: 'invalid.json', mimeType: 'application/json', buffer: Buffer.from('{}') });
   await first.waitForFunction(() => document.querySelector('#status').textContent.includes('Previous results are unchanged'));
   assert.match(await first.locator('#cloud-dirty').textContent(), /matches/, 'Rejected restore must not mark history dirty');
@@ -101,33 +210,52 @@ try {
     return Array.from({ length: metadata.chunks }, (_, i) => JSON.parse(localStorage.getItem('cloud:payolaUsers/test-user/chunks/' + i)).data).join('');
   });
   first.once('dialog', dialog => dialog.dismiss());
+  await visitControl(first, '#restore-session');
   await first.locator('#restore-session').setInputFiles({ name: 'saved.json', mimeType: 'application/json', buffer: Buffer.from(savedText) });
   await first.waitForFunction(() => !document.querySelector('#save-session').disabled);
   assert.match(await first.locator('#cloud-dirty').textContent(), /matches/, 'Cancelled restore must not mark history dirty');
   const second = await context.newPage(); await second.goto(base); await signIn(second);
   assert.match(await second.locator('#cloud-status').textContent(), /version 1/);
+  await visitControl(second, '[data-mode="manual"]');
   await second.locator('[data-mode="manual"]').click();
   assert.equal(await second.locator('#cloud-save').isDisabled(), true, 'Empty manual history must not be saved');
+  await visitControl(second, '#manual-form [name="artist"]');
   await second.locator('#manual-form [name="artist"]').fill('Cross-device Artist');
+  await visitControl(second, '#manual-form [name="plays"]');
   await second.locator('#manual-form [name="plays"]').fill('500');
-  await second.locator('#manual-form button').click();
+  await visitControl(second, '#manual-form button[type=submit]');
+  await second.locator('#manual-form button[type=submit]').click();
   assert.equal(await second.locator('#unsaved-history').isVisible(), true);
+  await second.locator('nav a[href="/receipt"]').click();
+  await second.locator('#keep-receipt').click();
+  await second.locator('#collection-refresh').click();
+  await second.waitForFunction(() => !document.querySelector('#collection-save').disabled);
+  second.once('dialog', dialog => dialog.accept());
+  await second.locator('#collection-save').click();
+  await second.waitForFunction(() => document.querySelector('#collection-status').textContent.includes('Receipt saved'));
+  assert.equal(await second.locator('#unsaved-history').isVisible(), true, 'Receipt summary does not back up real history');
   assert.equal(await second.evaluate(() => !window.dispatchEvent(new Event('beforeunload', { cancelable: true }))), true);
+  await visitControl(second, '#artist-search');
   await second.locator('#artist-search').fill('Cross');
   assert.equal(await second.locator('#unsaved-history').isVisible(), true);
+  await visitControl(second, '#export-csv');
   const csvDownload = second.waitForEvent('download'); await second.locator('#export-csv').click(); await csvDownload;
   assert.equal(await second.locator('#unsaved-history').isVisible(), true, 'CSV is not a complete session backup');
+  await visitControl(second, '#cloud-save');
   second.once('dialog', dialog => dialog.accept()); await second.locator('#cloud-save').click();
   await second.waitForFunction(() => document.querySelector('#cloud-status').textContent.includes('version 2'));
   assert.equal(await second.locator('#unsaved-history').isVisible(), false);
+  await visitControl(first, '#cloud-save');
   first.once('dialog', dialog => dialog.accept()); await first.locator('#cloud-save').click();
   await first.waitForFunction(() => document.querySelector('#account-status').textContent.includes('another device'));
   assert.equal(await first.locator('#cloud-conflict').isVisible(), true);
   assert.equal(await first.locator('#cloud-save').isDisabled(), true);
   assert.equal(await first.locator('#stat-plays').textContent(), '2,727');
+  await visitControl(first, '#cloud-load');
   first.once('dialog', dialog => dialog.dismiss()); await first.locator('#cloud-load').click();
   await first.waitForFunction(() => !document.querySelector('#cloud-load').disabled);
   assert.equal(await first.locator('#stat-plays').textContent(), '2,727');
+  await visitControl(first, '#cloud-load');
   first.once('dialog', dialog => dialog.accept()); await first.locator('#cloud-load').click();
   await first.waitForFunction(() => document.querySelector('#stat-plays').textContent === '500');
   assert.match(await first.locator('#cloud-status').textContent(), /version 2/);
@@ -135,7 +263,9 @@ try {
   assert.match(await first.locator('#history-details').textContent(), /Cloud snapshot/);
   assert.equal(await first.locator('#manual-form [name="plays"]').inputValue(), '500');
   assert.equal(await first.locator('#unsaved-history').isVisible(), false, 'Cloud load is backed by a confirmed snapshot');
+  await visitControl(first, '.danger-zone > summary');
   await first.locator('.danger-zone > summary').click();
+  await visitControl(first, '#cloud-delete');
   first.once('dialog', dialog => dialog.accept()); await first.locator('#cloud-delete').click();
   await first.waitForFunction(() => document.querySelector('#cloud-status').textContent.includes('deleted'));
   assert.equal(await first.locator('#stat-plays').textContent(), '500');
@@ -144,19 +274,24 @@ try {
     window.testOriginalFileText = File.prototype.text;
     File.prototype.text = async function () { await new Promise(resolve => setTimeout(resolve, 600)); return window.testOriginalFileText.call(this); };
   });
+  await visitControl(first, '#restore-session');
   await first.locator('#restore-session').setInputFiles({ name: 'slow.json', mimeType: 'application/json', buffer: Buffer.from('{}') });
   assert.equal(await first.locator('#cloud-load').isDisabled(), true);
   await first.waitForFunction(() => !document.querySelector('#cloud-load').disabled);
   await first.evaluate(() => { File.prototype.text = window.testOriginalFileText; });
   assert.equal(await first.evaluate(() => JSON.parse(localStorage.getItem('cloud:payolaUsers/test-user/chunks/0')).data), '');
+  await visitControl(first, '#account-signout');
   await first.locator('#account-signout').click();
   await first.waitForFunction(() => document.querySelector('#cloud-controls').hidden);
   assert.equal(await first.locator('#stat-plays').textContent(), '500');
   // A remembered identity checks cloud status as soon as the user connects.
   await first.evaluate(() => localStorage.setItem('test:remembered', 'yes'));
   const remembered = await context.newPage(); await remembered.goto(base);
-  assert.equal(await remembered.locator('#accounts').getAttribute('open'), null);
-  await remembered.locator('#accounts > summary').focus(); await remembered.keyboard.press('Enter');
+  assert.notEqual(await remembered.locator('#accounts').getAttribute('open'), null);
+  await visitControl(remembered, '#accounts');
+  await visitControl(remembered, '#accounts > summary');
+  await remembered.locator('#accounts > summary').focus();
+  await visitControl(remembered, '#account-connect');
   await remembered.locator('#account-connect').click();
   await remembered.waitForFunction(() => !document.querySelector('#cloud-save').disabled);
   assert.match(await remembered.locator('#cloud-status').textContent(), /No saved/);
@@ -165,108 +300,250 @@ try {
   // Registration warning survives the later verification-success message.
   await first.evaluate(() => localStorage.removeItem('cloud:users/test-user'));
   const signup = await context.newPage(); await signup.goto(base);
-  await signup.locator('#accounts > summary').click(); await signup.locator('#account-connect').click();
-  await signup.locator('#account-action').selectOption('signup');
+  await signup.locator('nav a[href="/receipt"]').click();
+  await signup.locator('#keep-receipt').click();
+  await signup.locator('#receipt-title').fill('Before signup');
+  await visitControl(signup, '#accounts > summary');
+  await visitControl(signup, '#account-connect');
+  await signup.locator('#account-connect').click();
+  await visitControl(signup, '#account-action');
+  await signup.locator('[data-auth-view="signup"]').click();
+  await visitControl(signup, '#account-email');
   await signup.locator('#account-email').fill('new@example.com');
+  await visitControl(signup, '#account-password');
   await signup.locator('#account-password').fill('strong-password');
+  await visitControl(signup, '#account-confirm');
   await signup.locator('#account-confirm').fill('strong-password');
+  await visitControl(signup, '#account-first');
+  await visitControl(signup, '#account-last');
   await signup.locator('#account-first').fill('New'); await signup.locator('#account-last').fill('User');
+  await visitControl(signup, '#account-submit');
   await signup.locator('#account-submit').click();
   await signup.waitForFunction(() => document.querySelector('#account-status').textContent.includes('do not register again'));
   assert.match(await signup.locator('#account-status').textContent(), /Verify your email/);
   assert.equal(await signup.locator('#account-password').inputValue(), '');
   assert.equal(await signup.locator('#account-verify').isVisible(), true);
+  assert.equal(await signup.locator('#receipt-title').inputValue(), 'Before signup');
+  assert.equal(await signup.locator('#collection-save').isDisabled(), true, 'Unverified account cannot save receipts');
+  assert.equal(await signup.locator('#account-verify').isDisabled(), true, 'Successful registration starts resend cooldown');
+  assert.equal(await signup.evaluate(() => window.testVerificationSettings.url), base + '/account?emailAction=verify');
   assert.equal(await signup.locator('#account-profile-form').isVisible(), true);
   await signup.evaluate(() => { window.testProfileFailure = false; });
+  await visitControl(signup, '#profile-first');
+  await visitControl(signup, '#profile-last');
   await signup.locator('#profile-first').fill('New'); await signup.locator('#profile-last').fill('User');
   // Another tab finishing setup must never be overwritten, even if it has a role.
   await signup.evaluate(() => localStorage.setItem('cloud:users/test-user', JSON.stringify({ firstName: 'Existing', role: 'admin' })));
+  await visitControl(signup, '#account-profile-form [type="submit"]');
   await signup.locator('#account-profile-form [type="submit"]').click();
-  await signup.waitForFunction(() => document.querySelector('#account-profile-status').textContent.includes('Nothing was overwritten'));
+  await signup.waitForFunction(() => document.querySelector('#account-profile-status').textContent.includes('email differs'));
   assert.equal(await signup.evaluate(() => JSON.parse(localStorage.getItem('cloud:users/test-user')).role), 'admin');
+  await visitControl(signup, '#account-refresh');
   await signup.locator('#account-refresh').click();
   await signup.waitForFunction(() => document.querySelector('#cloud-controls').hidden === false && document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
   assert.match(await signup.locator('#account-badge').textContent(), /Signed in/);
   // A slow cloud load cannot replace an edited local view.
+  await visitControl(second, '#cloud-check');
   await second.locator('#cloud-check').click();
   await second.waitForFunction(() => document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
+  await visitControl(second, '#cloud-save');
   second.once('dialog', dialog => dialog.accept()); await second.locator('#cloud-save').click();
   await second.waitForFunction(() => document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
   await second.evaluate(() => { window.testReadDelay = 500; });
+  await visitControl(second, '#cloud-load');
   await second.locator('#cloud-load').click();
+  await visitControl(second, '#manual-form [name="plays"]');
   await second.locator('#manual-form [name="plays"]').fill('600');
-  await second.locator('#manual-form button').click();
+  await visitControl(second, '#manual-form button[type=submit]');
+  await second.locator('#manual-form button[type=submit]').click();
   await second.waitForFunction(() => document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
   assert.match(await second.locator('#account-status').textContent(), /Local view changed/);
   assert.equal(await second.locator('#stat-plays').textContent(), '600');
   await second.evaluate(() => { window.testReadDelay = 0; });
   // Metadata repair is explicit, bounded and leaves the local view alone.
   await second.evaluate(() => localStorage.setItem('cloud:payolaUsers/test-user/state/current', JSON.stringify({ version: 10, schema: 999 })));
+  await visitControl(second, '#cloud-check');
   await second.locator('#cloud-check').click();
   await second.waitForFunction(() => document.querySelector('#account-status').textContent.includes('damaged'));
   assert.equal(await second.locator('#cloud-save').isDisabled(), true);
   await second.evaluate(() => { window.testReadFailure = true; });
+  await visitControl(second, '#cloud-check');
   await second.locator('#cloud-check').click();
   await second.waitForFunction(() => document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
   assert.equal(await second.locator('#cloud-delete').isDisabled(), true, 'Failed checks invalidate prior recovery metadata');
   await second.evaluate(() => { window.testReadFailure = false; });
+  await visitControl(second, '#cloud-check');
   await second.locator('#cloud-check').click();
   await second.waitForFunction(() => document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
+  await visitControl(second, '.danger-zone > summary');
   await second.locator('.danger-zone > summary').click();
+  await visitControl(second, '#cloud-delete');
   second.once('dialog', dialog => dialog.accept()); await second.locator('#cloud-delete').click();
   await second.waitForFunction(() => document.querySelector('#cloud-status').textContent.includes('deleted'));
   assert.equal(await second.evaluate(() => JSON.parse(localStorage.getItem('cloud:payolaUsers/test-user/state/current')).version), 11);
   assert.equal(await second.locator('#stat-plays').textContent(), '600');
   // Sign-out clearing is opt-in and never deletes the account's snapshot.
+  await visitControl(second, '#compare-file-a');
+  for (const id of ['a', 'b']) await second.locator(`#compare-file-${id}`).setInputFiles({ name: `comparison-${id}.json`, mimeType: 'application/json', buffer: Buffer.from(savedText) });
+  await second.locator('#compare-sessions').click();
+  await second.waitForFunction(() => !document.querySelector('#download-comparison').hidden);
+  await visitControl(second, '#account-clear-signout');
   await second.evaluate(() => localStorage.setItem('payola-lastfm-user', 'private-user'));
   await second.locator('#account-clear-signout').check();
+  await visitControl(second, '#account-signout');
   second.once('dialog', dialog => dialog.accept()); await second.locator('#account-signout').click();
   await second.waitForFunction(() => document.querySelector('#cloud-controls').hidden);
   assert.equal(await second.locator('#stat-plays').textContent(), '0');
   assert.equal(await second.evaluate(() => localStorage.getItem('payola-lastfm-user')), null);
+  assert.equal(await second.locator('#download-comparison').getAttribute('hidden'), '');
+  assert.match(await second.locator('#session-comparison').textContent(), /Comparison cleared/);
+  assert.deepEqual(await second.evaluate(() => ['a', 'b'].map(id => document.querySelector(`#compare-file-${id}`).files.length)), [0, 0]);
   // A delayed write stays single-flight and only marks its captured revision saved.
+  await visitControl(remembered, '#cloud-check');
   await remembered.locator('#cloud-check').click();
   await remembered.waitForFunction(() => document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
   await remembered.evaluate(() => { window.testWriteFailure = true; });
+  await visitControl(remembered, '#cloud-save');
   remembered.once('dialog', dialog => dialog.accept()); await remembered.locator('#cloud-save').click();
   await remembered.waitForFunction(() => document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
   assert.equal(await remembered.locator('#cloud-save').isDisabled(), true);
   assert.match(await remembered.locator('#cloud-status').textContent(), /not confirmed/);
   await remembered.evaluate(() => { window.testWriteFailure = false; });
+  await visitControl(remembered, '#cloud-check');
   await remembered.locator('#cloud-check').click();
   await remembered.waitForFunction(() => document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
   await remembered.evaluate(() => { window.testWriteDelay = 13000; });
+  await visitControl(remembered, '#cloud-save');
   remembered.once('dialog', dialog => dialog.accept()); await remembered.locator('#cloud-save').click();
+  await visitControl(remembered, '[data-mode="manual"]');
   await remembered.locator('[data-mode="manual"]').click();
+  await visitControl(remembered, '#manual-form [name="artist"]');
   await remembered.locator('#manual-form [name="artist"]').fill('Changed during save');
+  await visitControl(remembered, '#manual-form [name="plays"]');
   await remembered.locator('#manual-form [name="plays"]').fill('99');
-  await remembered.locator('#manual-form button').click();
+  await visitControl(remembered, '#manual-form button[type=submit]');
+  await remembered.locator('#manual-form button[type=submit]').click();
   await remembered.waitForFunction(() => document.querySelector('#account-status').textContent.includes('taking longer'), { timeout: 15000 });
   assert.equal(await remembered.locator('#cloud-save').isDisabled(), true);
   await remembered.waitForFunction(() => document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
   assert.match(await remembered.locator('#cloud-dirty').textContent(), /not saved/);
   assert.equal(await remembered.locator('#stat-plays').textContent(), '99');
   assert.equal(await remembered.locator('#unsaved-history').isVisible(), true);
+  await visitControl(remembered, '#save-session');
   remembered.once('dialog', dialog => dialog.dismiss()); await remembered.locator('#save-session').click();
   assert.equal(await remembered.locator('#unsaved-history').isVisible(), true);
   const downloaded = remembered.waitForEvent('download');
+  await visitControl(remembered, '#save-session');
   remembered.once('dialog', dialog => dialog.accept()); await remembered.locator('#save-session').click();
   await downloaded;
   assert.equal(await remembered.locator('#unsaved-history').isVisible(), false);
   assert.equal(await remembered.evaluate(() => !window.dispatchEvent(new Event('beforeunload', { cancelable: true }))), false);
   // An auth change during a read must never restore the previous account's view.
   await remembered.evaluate(() => { window.testReadDelay = 500; });
+  await visitControl(remembered, '#cloud-load');
   await remembered.locator('#cloud-load').click();
   await remembered.evaluate(() => window.testAuthChange(null));
   await remembered.waitForFunction(() => document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
   assert.equal(await remembered.locator('#cloud-controls').isVisible(), false);
   assert.equal(await remembered.locator('#stat-plays').textContent(), '99');
   await signup.evaluate(() => { window.testReadDelay = 400; });
+  await visitControl(signup, '#account-profile-check');
   await signup.locator('#account-profile-check').click();
   await signup.evaluate(() => window.testAuthChange(null));
   await signup.waitForFunction(() => document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
   assert.equal(await signup.locator('#account-profile-status').textContent(), '');
   assert.equal(await signup.locator('#account-profile-form').isVisible(), false);
+  // A large local session must not invalidate a previously checked cloud version.
+  const large = await context.newPage(); await large.goto(base); await signIn(large);
+  const { sessionText } = await import('../session.js');
+  const oversized = sessionText({ mode: 'import', selectedService: 'spotify', records: Array.from({ length: 2200 }, () => ({ date: '2026-01-01', ms: 60000, artist: '🎵'.repeat(250), track: '🎵'.repeat(500), supported: true })), filters: { from: '', to: '' }, duplicates: 0 });
+  await visitControl(large, '#restore-session');
+  large.once('dialog', dialog => dialog.accept());
+  await large.locator('#restore-session').setInputFiles({ name: 'large.json', mimeType: 'application/json', buffer: Buffer.from(oversized) });
+  await large.waitForFunction(() => document.querySelector('#stat-plays').textContent === '2,200');
+  await visitControl(large, '#cloud-save');
+  assert.equal(await large.locator('#cloud-save').isDisabled(), true);
+  assert.match(await large.locator('#cloud-size').textContent(), /Too large/);
+  assert.equal(await large.locator('#cloud-delete').isEnabled(), true, 'Local size failure preserves known cloud status');
+  const returned = await context.newPage(); await returned.goto(base + '/account?emailAction=reset');
+  assert.match(await returned.locator('#account-status').textContent(), /Returning here alone does not prove/);
+  assert.equal(new URL(returned.url()).searchParams.get('emailAction'), 'reset');
+  await returned.locator('#account-connect').click();
+  assert.match(await returned.locator('#account-return-guidance').textContent(), /sign in with your updated password/);
+  assert.equal(await returned.locator('#account-return-guidance').isVisible(), true);
+  await returned.locator('[data-auth-view="reset"]').click();
+  assert.equal(await returned.locator('#account-password-fields').isVisible(), false);
+  await returned.locator('#account-email').fill('recovery@example.com');
+  await returned.locator('#account-submit').click();
+  await returned.waitForFunction(() => document.querySelector('#account-status').textContent.includes('reset email has been requested'));
+  assert.equal(await returned.evaluate(() => window.testResetRequest.email), 'recovery@example.com');
+  await returned.locator('[data-auth-view="signin"]').click();
+  await returned.locator('#account-password').fill('valid-password');
+  await returned.locator('[data-password-toggle="account-password"]').click();
+  await returned.locator('#account-remember').check();
+  await returned.locator('#account-submit').click();
+  await returned.waitForFunction(() => !document.querySelector('#cloud-save').disabled);
+  assert.equal(await returned.locator('#account-password').getAttribute('type'), 'password');
+  await returned.locator('#account-signout').click();
+  await returned.waitForFunction(() => document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
+  assert.equal(await returned.locator('#account-email').inputValue(), '');
+  assert.equal(await returned.locator('#account-remember').isChecked(), false);
+  assert.equal(await returned.locator('#account-password').inputValue(), '');
+  // A late conflict from an old identity must not poison the new identity's UI.
+  const stale = await context.newPage(); await stale.goto(base); await signIn(stale);
+  await stale.evaluate(() => { window.testWriteDelay = 200; window.testLateWriteFailure = true; });
+  stale.once('dialog', dialog => dialog.accept());
+  await stale.locator('#cloud-save').click();
+  await stale.evaluate(() => window.testAuthChange({ uid: 'fresh-account', email: 'fresh@example.com', emailVerified: true }));
+  await stale.waitForFunction(() => document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
+  assert.equal(await stale.locator('#cloud-conflict').isVisible(), false);
+  assert.match(await stale.locator('#account-identity').textContent(), /fresh@example.com/);
+  assert.match(await stale.locator('#cloud-status').textContent(), /No saved/);
+  assert.equal(await stale.locator('#cloud-save').isEnabled(), true);
+  assert.doesNotMatch(await stale.locator('#account-status').textContent(), /Stale transaction conflict/);
+
+  // Registration must remain single-flight while the real profile write is pending.
+  const pending = await context.newPage();
+  await pending.route('**/firebase-client.js', route => route.fulfill({ contentType: 'text/javascript', body: adapter.replaceAll("'test-user'", "'pending-user'") }));
+  await pending.goto(base + '/account?emailAction=verify');
+  await pending.locator('#account-connect').click();
+  await pending.waitForFunction(() => document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
+  assert.match(await pending.locator('#account-return-guidance').textContent(), /check verification status/);
+  await pending.locator('[data-auth-view="signup"]').click();
+  await pending.locator('#account-email').fill('test@example.com');
+  await pending.locator('#account-password').fill('strong-password');
+  await pending.locator('#account-confirm').fill('strong-password');
+  await pending.locator('#account-first').fill('Pending');
+  await pending.locator('#account-last').fill('User');
+  await pending.evaluate(() => { window.testProfileSuccess = true; window.testWriteDelay = 14000; window.testVerificationFailure = true; });
+  await pending.locator('#account-submit').click();
+  await pending.waitForFunction(() => document.querySelector('#account-status').textContent.includes('taking longer'), { timeout: 16000 });
+  assert.equal(await pending.locator('#accounts').getAttribute('aria-busy'), 'true');
+  assert.equal(await pending.locator('#account-profile-form').isVisible(), false);
+  assert.equal(await pending.locator('#account-profile-check').isDisabled(), true);
+  // The account lock must not block navigation or local listening.
+  await pending.locator('nav a[href="/dashboard"]').click();
+  assert.equal(await pending.locator('[data-page="/dashboard"]').isVisible(), true);
+  await pending.locator('nav a[href="/account"]').click();
+  await pending.waitForFunction(() => document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
+  assert.equal(await pending.evaluate(() => JSON.parse(localStorage.getItem('cloud:users/pending-user')).firstName), 'Pending');
+  assert.equal(await pending.locator('#account-profile-form').isVisible(), false);
+  assert.match(await pending.locator('#account-status').textContent(), /verification email delivery failed/);
+  assert.equal(await pending.locator('#account-verify').isEnabled(), true, 'Failed delivery must not start cooldown');
+  await pending.evaluate(() => { window.testVerificationFailure = false; window.testWriteDelay = 0; });
+  await pending.locator('#account-verify').click();
+  await pending.waitForFunction(() => document.querySelector('#accounts').getAttribute('aria-busy') === 'false');
+  assert.equal(await pending.locator('#account-verify').isDisabled(), true);
+  assert.match(await pending.locator('#account-verify').textContent(), /Resend available/);
+  for (const width of [320, 390, 768, 1440]) {
+    await large.setViewportSize({ width, height: 900 });
+    assert.equal(await large.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+    await returned.setViewportSize({ width, height: 900 });
+    assert.equal(await returned.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  }
+  await large.screenshot({ path: '/tmp/payola-account-signed-in.png', fullPage: true });
+  await returned.setViewportSize({ width: 390, height: 844 });
+  await returned.screenshot({ path: '/tmp/payola-account-mobile.png', fullPage: true });
   for (const width of [320, 390, 768, 1440]) {
     await second.setViewportSize({ width, height: 1000 });
     assert.ok(await second.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), `Overflow at ${width}`);
@@ -274,5 +551,5 @@ try {
     assert.ok(await remembered.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), `Remembered layout overflow at ${width}`);
   }
   assert.deepEqual(errors, []);
-  console.log('PASS: guest isolation, account/profile repair, concurrent-profile preservation, stale auth results, failed status/recovery invalidation, unsaved reminders, unload guards, downloads/CSV distinction, cloud races/conflicts and responsive layouts (mocked Firebase adapter).');
+  console.log('PASS: guest isolation, token observer, account/profile repair, pending registration writes, failed verification resend, email returns, stale-account conflict isolation, failed status/recovery invalidation, unsaved reminders, unload guards, downloads/CSV distinction, cloud races/conflicts and responsive layouts (mocked Firebase adapter).');
 } finally { await browser.close(); }

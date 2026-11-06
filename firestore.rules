@@ -29,6 +29,31 @@ service cloud.firestore {
 
     // No admin exception for listening history. Bounded slots prevent arbitrary
     // collections/documents. JSON content is validated again on client load.
+    match /payolaUsers/{uid}/receipts/{slot} {
+      function boundedText(r, key, maximum) { return r[key] is string && r[key].size() <= maximum; }
+      function validReceipt(r) {
+        return r is map
+          && r.keys().hasAll(['title', 'note', 'source', 'period', 'amount', 'label', 'plays', 'disclosure', 'highlights', 'theme'])
+          && r.keys().hasOnly(['title', 'note', 'source', 'period', 'amount', 'label', 'plays', 'disclosure', 'highlights', 'theme'])
+          && boundedText(r, 'title', 100) && r.title.size() > 0
+          && boundedText(r, 'note', 500) && boundedText(r, 'source', 160) && r.source.size() > 0
+          && boundedText(r, 'period', 200) && boundedText(r, 'amount', 80)
+          && boundedText(r, 'label', 160) && boundedText(r, 'plays', 80)
+          && boundedText(r, 'disclosure', 2000) && r.disclosure.size() > 0
+          && boundedText(r, 'highlights', 2000) && r.theme in ['paper', 'midnight'];
+      }
+      allow read: if verifiedOwner(uid) && slot.matches('^([0-9]|1[0-9])$');
+      allow create, update: if verifiedOwner(uid) && slot.matches('^([0-9]|1[0-9])$')
+        && request.resource.data.keys().hasOnly(['schema', 'version', 'deleted', 'receipt', 'updatedAt'])
+        && request.resource.data.schema == 1
+        && request.resource.data.version is int && request.resource.data.version > 0
+        && request.resource.data.version <= 9007199254740991
+        && request.resource.data.version == (resource == null ? 1 : resource.data.version + 1)
+        && request.resource.data.deleted is bool
+        && request.resource.data.receipt is map
+        && (request.resource.data.deleted ? request.resource.data.receipt.size() == 0 : validReceipt(request.resource.data.receipt))
+        && request.resource.data.updatedAt == request.time;
+    }
     match /payolaUsers/{uid}/state/current {
       allow read: if verifiedOwner(uid);
       allow create, update: if verifiedOwner(uid)

@@ -1,4 +1,4 @@
-import { normalizeRecords, mergeRecords } from './lib.js';
+import { normalizeRecords, mergeRecords, summarize } from './lib.js';
 import { fileSources, MAX_BYTES } from './importer.js';
 import { normalizeCSV } from './csv-history.js';
 import { MAX_SESSION_FILE_BYTES } from './session.js';
@@ -27,8 +27,10 @@ export async function runImport(files, state, progress = () => {}) {
           progress({ stage: `Reading / decompressing ${source.name}`, value: (i + j / sources.length) / files.length });
           const text = await source.read();
           progress({ stage: `Checking duplicates: ${source.name}`, value: (i + j / sources.length) / files.length });
-          const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))].map(b => b.toString(16).padStart(2, '0')).join('');
-          if (hashes.has(hash)) { messages.push(`${source.name}: identical file contents already imported; skipped.`); continue; }
+          const mapping = state.mapping ?? { date: 'date', artist: 'artist', track: 'track', ms: 'ms_played' };
+          const identity = state.csv ? JSON.stringify(['csv', ['date', 'artist', 'track', 'ms'].map(key => mapping[key] || ''), text]) : JSON.stringify(['spotify', text]);
+          const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(identity)))].map(b => b.toString(16).padStart(2, '0')).join('');
+          if (hashes.has(hash)) { previews.push({ name: source.name, status: 'duplicate file' }); messages.push(`${source.name}: identical file contents already imported; skipped.`); continue; }
           if (bytes + source.size > MAX_SESSION_BYTES) throw new Error('Session limit: 100 MB of successfully imported history. Clear data or choose Replace to start a new session.');
           progress({ stage: `Parsing and validating ${source.name}`, value: (i + j / sources.length) / files.length });
           const data = state.csv ? null : JSON.parse(text.replace(/^\uFEFF/, ''));
@@ -46,11 +48,11 @@ export async function runImport(files, state, progress = () => {}) {
           occurrences.clear(); for (const [key, count] of candidateOccurrences) occurrences.set(key, count);
           hashes.add(hash); bytes += source.size; duplicates += merged.duplicates; added++;
           const dates = normalized.filter(r => !r.invalid).map(r => r.date).sort();
-          previews.push({ name: source.name, source: state.csv ? 'User-provided CSV history (unverified)' : 'Spotify Extended Streaming History', records: normalized.length, added: merged.added, duplicates: merged.duplicates, invalid: normalized.filter(r => r.invalid).length, from: dates[0], to: dates.at(-1) });
+          previews.push({ name: source.name, status: 'accepted', source: state.csv ? 'User-provided CSV history (unverified)' : 'Spotify Extended Streaming History', records: normalized.length, added: merged.added, duplicates: merged.duplicates, ...summarize(normalized).audit, from: dates[0], to: dates.at(-1) });
           messages.push(`${source.name}: ${merged.added} records added, ${merged.duplicates} matching occurrences skipped.`);
-        } catch (error) { messages.push(`${source.name}: ${error instanceof SyntaxError ? 'Invalid JSON. Choose an audio-history JSON file.' : error.message}`); }
+        } catch (error) { previews.push({ name: source.name, status: 'rejected' }); messages.push(`${source.name}: ${error instanceof SyntaxError ? 'Invalid JSON. Choose an audio-history JSON file.' : error.message}`); }
       }
-    } catch (error) { messages.push(`${file.name}: ${error.message}`); }
+    } catch (error) { previews.push({ name: file.name, status: 'rejected' }); messages.push(`${file.name}: ${error.message}`); }
     progress({ stage: 'Finishing selection', value: (i + 1) / files.length });
   }
   return { records, hashes, occurrences, bytes, duplicates, messages, added, previews };

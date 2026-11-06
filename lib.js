@@ -5,11 +5,13 @@ export const escapeHTML = value => String(value).replace(/[&<>"']/g, c => ({ '&'
 
 // Shared import/session limits keep successfully imported history restorable.
 export const validRecordDate = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
+export const validTimestamp = (value, date) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value && value.slice(0, 10) === date;
 export function validListeningRecord(r, lastfm = false) {
   const text = (value, max) => typeof value === 'string' && value.length <= max;
   return Boolean(r && validRecordDate(r.date) && text(r.artist, 500) && text(r.track, 1000) && typeof r.supported === 'boolean'
     && (!r.supported || (r.artist.trim() && r.track.trim()))
     && (r.eventKey === undefined || text(r.eventKey, 8192))
+    && (r.timestamp === undefined || validTimestamp(r.timestamp, r.date))
     && (lastfm ? r.source === 'lastfm' && r.ms === null && r.supported
       : (r.source === undefined || r.source === 'csv') && ((r.source === 'csv' && r.ms === null) || (typeof r.ms === 'number' && Number.isFinite(r.ms) && r.ms >= 0 && r.ms <= 86400000))));
 }
@@ -21,13 +23,18 @@ export function normalizeRecords(data) {
   }
   return data.map(r => {
     if (!r || typeof r !== 'object') return { invalid: true };
-    const timestamp = typeof r.ts === 'string' ? Date.parse(r.ts) : NaN;
+    // Validate the source components before Date.parse can roll impossible dates forward.
+    const parts = typeof r.ts === 'string' && /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,3})?(Z|[+-](\d{2}):(\d{2}))$/.exec(r.ts);
+    const validTime = parts && validRecordDate(parts[1]) && Number(parts[2]) < 24 && Number(parts[3]) < 60 && Number(parts[4]) < 60
+      && (parts[5] === 'Z' || (Number(parts[6]) < 24 && Number(parts[7]) < 60));
+    const timestamp = validTime ? Date.parse(r.ts) : NaN;
     const duration = r.ms_played;
     const artist = typeof r.master_metadata_album_artist_name === 'string' ? r.master_metadata_album_artist_name.trim() : '';
     const track = typeof r.master_metadata_track_name === 'string' ? r.master_metadata_track_name.trim() : '';
     const isTrack = typeof r.spotify_track_uri === 'string' && r.spotify_track_uri.startsWith('spotify:track:');
     if (!Number.isFinite(timestamp) || typeof duration !== 'number' || !Number.isFinite(duration) || duration < 0) return { invalid: true };
     const normalized = { date: new Date(timestamp).toISOString().slice(0, 10), artist, track, ms: duration, supported: Boolean(isTrack && artist && track) };
+    normalized.timestamp = new Date(timestamp).toISOString();
     // Keep only a playback identity, never IP addresses or account identifiers.
     normalized.eventKey = JSON.stringify([timestamp, r.spotify_track_uri || null, artist, track, duration]);
     return validListeningRecord(normalized) ? normalized : { invalid: true };
@@ -51,13 +58,13 @@ export function summarize(records, { from = '', to = '' } = {}) {
     if (r.ms === null) unknownDuration = true;
     const month = r.date.slice(0, 7);
     const bucket = months.get(month) || { month, plays: 0, ms: 0 };
-    bucket.plays++; bucket.ms += r.ms || 0; months.set(month, bucket);
+    bucket.plays++; bucket.ms = bucket.ms === null || r.ms === null ? null : bucket.ms + r.ms; months.set(month, bucket);
     let artist = artists.get(r.artist);
     if (!artist) { artist = { name: r.artist, plays: 0, ms: 0, tracks: new Map() }; artists.set(r.artist, artist); }
-    artist.plays++; artist.ms += r.ms || 0;
+    artist.plays++; artist.ms = artist.ms === null || r.ms === null ? null : artist.ms + r.ms;
     artist.tracks.set(r.track, (artist.tracks.get(r.track) || 0) + 1);
   }
-  if (scrobbles || unknownDuration) { ms = null; for (const a of artists.values()) a.ms = null; for (const m of months.values()) m.ms = null; }
+  if (scrobbles || unknownDuration) ms = null;
   return { audit, ms, plays: audit.included, amount: scrobbles || csv ? null : audit.included * RATE, months: [...months.values()].sort((a, b) => a.month.localeCompare(b.month)),
     artists: [...artists.values()].sort((a, b) => b.plays - a.plays || a.name.localeCompare(b.name)) };
 }
@@ -90,6 +97,22 @@ export function manualSummary(name, plays) {
   if (!name.trim() || name.trim().length > 100) throw new Error('Enter an artist name between 1 and 100 characters.');
   if (!Number.isSafeInteger(plays) || plays < 1 || plays > 10000000) throw new Error('Enter a whole play count from 1 to 10,000,000.');
   return { plays, amount: plays * RATE, ms: null, audit: null, artists: [{ name: name.trim(), plays, ms: null, tracks: new Map() }] };
+}
+
+export function manualArtistsSummary(entries) {
+  if (!Array.isArray(entries) || !entries.length || entries.length > 100) throw new Error('Enter between 1 and 100 artist rows.');
+  const artists = new Map();
+  let total = 0;
+  for (const entry of entries) {
+    if (!entry || typeof entry.artist !== 'string') throw new Error('Enter a valid artist name.');
+    const summary = manualSummary(entry.artist, entry.plays), artist = summary.artists[0];
+    total += artist.plays;
+    if (total > 10000000) throw new Error('Total manual plays cannot exceed 10,000,000.');
+    const previous = artists.get(artist.name);
+    if (previous) previous.plays += artist.plays;
+    else artists.set(artist.name, artist);
+  }
+  return { plays: total, amount: total * RATE, ms: null, audit: null, artists: [...artists.values()].sort((a, b) => b.plays - a.plays || a.name.localeCompare(b.name)) };
 }
 
 export function sampleRecords() {

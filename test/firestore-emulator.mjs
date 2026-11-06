@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { createCloudStore } from '../cloud.js';
 import { createProfileStore } from '../profile.js';
 import { sessionText } from '../session.js';
+import { createReceiptStore, EMPTY_RECEIPT } from '../collection.js';
 const modules = process.env.FIREBASE_TEST_MODULES || new URL('../node_modules/', import.meta.url).pathname;
 const rulesSDK = await import(pathToFileURL(`${modules}/@firebase/rules-unit-testing/dist/esm/index.esm.js`));
 const sdk = await import(pathToFileURL(`${modules}/firebase/firestore/dist/esm/index.esm.js`));
@@ -19,6 +20,8 @@ try {
   await assertFails(sdk.setDoc(sdk.doc(a, 'users', 'alice'), { firstName: 'A', lastName: 'U', email: 'alice@example.com', createdAt: sdk.serverTimestamp(), role: 'admin' }));
   await assertSucceeds(sdk.setDoc(sdk.doc(a, 'users', 'alice'), { firstName: 'A', lastName: 'U', email: 'alice@example.com', createdAt: sdk.serverTimestamp() }));
   await assertSucceeds(sdk.updateDoc(sdk.doc(a, 'users', 'alice'), { firstName: 'Alice' }));
+  await createProfileStore(sdk, a, { uid: 'alice', email: 'alice@example.com' }).updateNames('Updated', 'Name');
+  assert.equal((await sdk.getDoc(sdk.doc(a, 'users', 'alice'))).data().firstName, 'Updated');
   const repairDB = user('repair', false);
   const repair = createProfileStore(sdk, repairDB, { uid: 'repair', email: 'repair@example.com' });
   assert.equal(await repair.exists(), false);
@@ -33,7 +36,31 @@ try {
     await sdk.setDoc(sdk.doc(context.firestore(), 'users', 'boss'), { role: 'admin', firstName: 'Boss', lastName: 'User', email: 'boss@example.com' });
   });
   const boss = user('boss');
+  const receipts = createReceiptStore(sdk, a, 'alice');
+  const receipt = { ...EMPTY_RECEIPT, title: 'Summer', source: 'Self-reported Spotify', disclosure: 'Estimate only, not verified earnings.', theme: 'paper' };
+  assert.equal((await receipts.list()).length, 20);
+  assert.equal(await receipts.save(0, 0, receipt), 1);
+  const receiptRef = db => sdk.doc(db, 'payolaUsers', 'alice', 'receipts', '0');
+  for (const db of [b, boss, anonymous, unverified]) {
+    await assertFails(sdk.getDoc(receiptRef(db)));
+    await assertFails(sdk.setDoc(receiptRef(db), { schema: 1, version: 2, deleted: false, receipt, updatedAt: sdk.serverTimestamp() }));
+  }
+  const entry = { schema: 1, version: 2, deleted: false, receipt, updatedAt: sdk.serverTimestamp() };
+  await assertFails(sdk.setDoc(sdk.doc(a, 'payolaUsers', 'alice', 'receipts', '20'), { ...entry, version: 1 }));
+  await assertFails(sdk.setDoc(receiptRef(a), { ...entry, receipt: { ...receipt, records: [] } }));
+  await assertFails(sdk.setDoc(receiptRef(a), { ...entry, receipt: { ...receipt, note: 'x'.repeat(501) } }));
+  await assertFails(sdk.setDoc(receiptRef(a), { ...entry, version: 1 }));
+  await assertFails(sdk.setDoc(receiptRef(a), { ...entry, updatedAt: new Date(0) }));
+  await assertFails(sdk.setDoc(receiptRef(a), { ...entry, deleted: true }));
+  await assertFails(sdk.deleteDoc(receiptRef(a)));
+  assert.equal(await receipts.save(0, 1, { ...receipt, title: 'Renamed', theme: 'midnight' }), 2);
+  await assert.rejects(receipts.save(0, 1, receipt), /another device/);
+  assert.equal(await receipts.remove(0, 2), 3);
+  assert.deepEqual((await sdk.getDoc(receiptRef(a))).data().receipt, {});
+  assert.equal(await receipts.save(0, 3, receipt), 4);
   assert.equal(await createProfileStore(sdk, boss, { uid: 'boss', email: 'boss@example.com' }).finish('No', 'Overwrite'), false);
+  assert.equal((await sdk.getDoc(sdk.doc(boss, 'users', 'boss'))).data().role, 'admin');
+  await createProfileStore(sdk, boss, { uid: 'boss', email: 'boss@example.com' }).updateNames('Updated', 'Boss');
   assert.equal((await sdk.getDoc(sdk.doc(boss, 'users', 'boss'))).data().role, 'admin');
   await assertSucceeds(sdk.getDocs(sdk.query(sdk.collectionGroup(boss, 'jobs'), sdk.orderBy('createdAt', 'desc'))));
   await assertFails(sdk.updateDoc(sdk.doc(boss, 'users', 'boss'), { role: 'user' }));
@@ -63,5 +90,5 @@ try {
   const otherDevice = createCloudStore(sdk, user('alice'), 'alice');
   assert.equal(await otherDevice.save(session, 11), 12);
   assert.equal((await store.load()).text, session);
-  console.log('PASS: emulator rules, profiles, admin self-promotion denial, jobs, owner-only cloud snapshots, cross-device save/load/conflict/delete');
+  console.log('PASS: emulator rules, profiles, admin self-promotion denial, jobs, owner-only cloud snapshots and receipt collection, bounded summaries/slots, oversized-note denial, cross-device save/load/conflict/delete');
 } finally { await environment.cleanup(); }

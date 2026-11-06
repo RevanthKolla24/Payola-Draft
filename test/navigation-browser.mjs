@@ -1,0 +1,135 @@
+import assert from 'node:assert/strict';
+import { pages } from '../navigation.js';
+import { sessionText } from '../session.js';
+const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const browser = await chromium.launch();
+const base = process.env.TEST_URL || 'http://127.0.0.1:3000';
+try {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  const errors = [], requests = [];
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('request', request => requests.push(request.url()));
+  await page.goto(base);
+  await page.locator('#start-sample').click();
+  assert.equal(new URL(page.url()).pathname, '/dashboard');
+  assert.equal(await page.locator('nav [aria-current="page"]').textContent(), 'Dashboard');
+  assert.equal(await page.locator('h2:focus').count(), 1);
+  assert.equal(await page.locator('[data-page]:visible').count(), 1);
+  await page.evaluate(() => { window.sessionSentinel = 'still here'; window.scrollTo(0, 850); });
+  await page.waitForTimeout(100);
+  const position = await page.evaluate(() => scrollY);
+  const entries = await page.evaluate(() => history.length);
+  await page.evaluate(() => document.querySelector('nav a[href="/dashboard"]').click());
+  await page.waitForTimeout(100);
+  assert.equal(await page.evaluate(() => scrollY), 0, 'Current-page navigation returns to top');
+  assert.equal(await page.evaluate(() => history.length), entries, 'Current-page navigation adds no history entry');
+  await page.evaluate(position => window.scrollTo(0, position), position);
+  await page.waitForTimeout(100);
+  // Use an in-viewport link so Playwright itself does not first scroll to the header.
+  await page.evaluate(() => document.querySelector('nav a[href="/receipt"]').click());
+  await page.waitForTimeout(100);
+  assert.equal(await page.evaluate(() => scrollY), 0);
+  assert.equal(await page.evaluate(() => window.sessionSentinel), 'still here');
+  assert.equal(await page.locator('.receipt-column').evaluate(el => getComputedStyle(el).position), 'static');
+  await page.goBack();
+  await page.waitForTimeout(100);
+  assert.ok(Math.abs(await page.evaluate(() => scrollY) - position) < 2, 'Back restores dashboard position');
+  await page.goForward();
+  await page.waitForTimeout(100);
+  assert.equal(new URL(page.url()).pathname, '/receipt');
+  const download = page.waitForEvent('download');
+  await page.locator('#share-button').click();
+  assert.match((await download).suggestedFilename(), /payola-reciept.*\.png/);
+  // Filters and artist search survive page changes without persisting raw history.
+  await page.locator('nav a[href="/dashboard"]').click();
+  await page.locator('#artist-search').fill('Luna');
+  await page.locator('#year-preset').selectOption('2026');
+  assert.equal(await page.locator('#from-date').inputValue(), '2026-01-01');
+  await page.locator('#date-toggle').click();
+  await page.locator('#reset-dates').click();
+  assert.equal(await page.locator('#year-preset').inputValue(), '', 'Reset clears stale year selection');
+  await page.locator('#year-preset').selectOption('2026');
+  await page.locator('#from-date').fill('2026-02-01');
+  await page.locator('#to-date').fill('2026-03-31');
+  await page.locator('#date-form [type="submit"]').click();
+  assert.equal(await page.locator('#year-preset').inputValue(), '', 'Custom dates clear stale year selection');
+  const plays = await page.locator('#stat-plays').textContent();
+  await page.locator('nav a[href="/receipt"]').click();
+  assert.equal(await page.locator('#receipt-plays').textContent(), plays);
+  await page.locator('nav a[href="/dashboard"]').click();
+  assert.equal(await page.locator('#artist-search').inputValue(), 'Luna');
+  assert.equal(await page.locator('#from-date').inputValue(), '2026-02-01');
+  await page.locator('.artist-button').first().click();
+  assert.equal(await page.locator('#artist-dialog').evaluate(el => el.open), true);
+  assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).overflow), 'hidden');
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('.artist-button:focus').count(), 1);
+  assert.notEqual(await page.evaluate(() => getComputedStyle(document.documentElement).overflow), 'hidden');
+  // Pending reviews are not discarded merely by visiting another page.
+  await page.locator('nav a[href="/import"]').click();
+  await page.locator('[data-mode="csv"]').click();
+  await page.locator('#csv-guided').uncheck();
+  await page.locator('#history-files').setInputFiles({ name: 'navigation.csv', mimeType: 'text/csv', buffer: Buffer.from('date,artist,track,ms_played\n2026-01-01,Navigation Artist,A Song,60000') });
+  await page.locator('#confirm-import').waitFor();
+  await page.locator('nav a[href="/help"]').click();
+  await page.locator('nav a[href="/import"]').click();
+  assert.equal(await page.locator('#confirm-import').isVisible(), true);
+  await page.locator('#confirm-import').click();
+  await page.locator('nav a[href="/receipt"]').click();
+  assert.equal(await page.locator('#receipt-plays').textContent(), '1');
+  assert.match(await page.locator('#receipt .currency-label').textContent(), /UNPRICED/);
+  assert.equal(await page.locator('#unsaved-history').isVisible(), true);
+  await page.locator('nav a[href="/dashboard"]').click();
+  assert.match(await page.locator('#artist-rows').textContent(), /Navigation Artist/);
+  assert.equal(requests.some(url => /firebase|\/api\/accounts/.test(url)), false, 'Guest navigation must not connect accounts');
+  // Fresh direct URLs deliberately use a labeled sample, not hidden persistence.
+  const direct = await browser.newPage();
+  for (const width of [1440, 1024, 768, 390, 320]) {
+    await direct.setViewportSize({ width, height: width > 760 ? 700 : 667 });
+    for (const path of Object.keys(pages)) {
+      const response = await direct.goto(base + path);
+      assert.equal(response.status(), 200, path);
+      await direct.waitForFunction(() => document.body.dataset.currentPage === location.pathname);
+      assert.equal(await direct.locator('[data-page]:visible').count(), 1);
+      assert.equal(await direct.locator('[data-page]:visible').getAttribute('data-page'), path);
+      assert.match(await direct.title(), /Payola Reciept/);
+      assert.equal(await direct.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `${width}px ${path} overflows`);
+      const ids = await direct.locator('[id]').evaluateAll(els => els.map(el => el.id));
+      assert.equal(new Set(ids).size, ids.length);
+    }
+  }
+  await direct.goto(base + '/dashboard');
+  await direct.keyboard.press('Tab');
+  await direct.keyboard.press('Enter');
+  assert.equal(await direct.locator('#main-content:focus').count(), 1);
+  await direct.emulateMedia({ reducedMotion: 'reduce' });
+  await direct.locator('nav a[href="/receipt"]').click();
+  assert.equal(await direct.evaluate(() => getComputedStyle(document.documentElement).scrollBehavior), 'auto');
+  // Early-year imports must remain filterable and serializable after presets.
+  await direct.locator('nav a[href="/history"]').click();
+  const earlySession = sessionText({ mode: 'import', selectedService: 'spotify', records: [{ date: '0050-06-15', artist: 'Early Artist', track: 'A Track', supported: true, ms: 60000 }], filters: { from: '', to: '' }, duplicates: 0 });
+  direct.once('dialog', dialog => dialog.accept());
+  await direct.locator('#restore-session').setInputFiles({ name: 'early.json', mimeType: 'application/json', buffer: Buffer.from(earlySession) });
+  await direct.waitForFunction(() => document.querySelector('#stat-plays').textContent === '1');
+  await direct.locator('nav a[href="/dashboard"]').click();
+  await direct.locator('[data-preset="12months"]').click();
+  assert.equal(await direct.locator('#from-date').inputValue(), '0049-07-01');
+  assert.equal(await direct.locator('#to-date').inputValue(), '0050-06-15');
+  assert.equal(await direct.locator('#stat-plays').textContent(), '1');
+  await direct.locator('#date-toggle').click();
+  await direct.locator('#from-date').fill('10000-01-01');
+  await direct.locator('#to-date').fill('10000-12-31');
+  await direct.locator('#date-form [type="submit"]').click();
+  assert.match(await direct.locator('#status').textContent(), /four-digit/);
+  assert.equal(await direct.locator('#stat-plays').textContent(), '1', 'Unsupported filter leaves the actual view unchanged');
+  await direct.locator('[data-preset="all"]').click();
+  await direct.locator('nav a[href="/history"]').click();
+  const sessionDownload = direct.waitForEvent('download');
+  direct.once('dialog', dialog => dialog.accept());
+  await direct.locator('#save-session').click();
+  assert.equal((await sessionDownload).suggestedFilename(), 'payola-reciept-session.json');
+  assert.deepEqual(errors, []);
+  console.log('Page navigation, scroll restoration, session/review preservation, receipt export, dialogs, keyboard and 35 responsive route checks passed.');
+} finally {
+  await browser.close();
+}

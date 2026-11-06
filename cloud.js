@@ -1,4 +1,5 @@
 import { parseSession } from './session.js';
+import { readWithTimeout } from './account-utils.js';
 
 export const CLOUD_CHUNKS = 16;
 export const CLOUD_CHUNK_BYTES = 256 * 1024;
@@ -40,12 +41,12 @@ export function decodeCloud(meta, chunks) {
 }
 
 // Dependency injection keeps transactions testable without production credentials.
-export function createCloudStore(sdk, db, uid, stillCurrent = () => true) {
+export function createCloudStore(sdk, db, uid, stillCurrent = () => true, readTimeout = 12000) {
   const root = sdk.doc(db, 'payolaUsers', uid, 'state', 'current');
   const chunkRef = index => sdk.doc(db, 'payolaUsers', uid, 'chunks', String(index));
   const guard = () => { if (!stillCurrent()) throw new Error('Account changed. Retry using the current account.'); };
   async function status() {
-    guard(); const snapshot = await sdk.getDocFromServer(root); guard();
+    guard(); const snapshot = await readWithTimeout(sdk.getDocFromServer(root), readTimeout); guard();
     if (!snapshot.exists()) return null;
     const data = snapshot.data();
     try { return validCloudMeta(data); }
@@ -73,16 +74,26 @@ export function createCloudStore(sdk, db, uid, stillCurrent = () => true) {
     guard(); return version;
   }
   async function load() {
-    const meta = await status();
-    if (!meta || meta.deleted) throw new Error('No saved Payola history on this account.');
-    const chunks = [];
-    for (let i = 0; i < meta.chunks; i++) {
-      guard(); const snapshot = await sdk.getDocFromServer(chunkRef(i)); guard();
-      chunks.push(snapshot.exists() ? snapshot.data() : null);
-    }
-    const latest = await status();
-    if (!latest || latest.version !== meta.version) throw conflict();
-    return { text: decodeCloud(meta, chunks), version: meta.version };
+    let active = true;
+    const check = () => {
+      guard();
+      if (!active) throw new Error('Cloud load expired. Retry loading; your local history is unchanged.');
+    };
+    // One deadline covers both metadata checks and every chunk, not 18 deadlines.
+    const read = async () => {
+      check(); const meta = await status(); check();
+      if (!meta || meta.deleted) throw new Error('No saved Payola history on this account.');
+      const chunks = [];
+      for (let i = 0; i < meta.chunks; i++) {
+        check(); const snapshot = await sdk.getDocFromServer(chunkRef(i)); check();
+        chunks.push(snapshot.exists() ? snapshot.data() : null);
+      }
+      const latest = await status(); check();
+      if (!latest || latest.version !== meta.version) throw conflict();
+      return { text: decodeCloud(meta, chunks), version: meta.version };
+    };
+    try { return await readWithTimeout(read(), readTimeout); }
+    finally { active = false; }
   }
   return { status, save: (text, expectedVersion) => write(text, expectedVersion), load, remove: expectedVersion => write('', expectedVersion, true), recover: recovery => write('', recovery.version, true, recovery) };
 }

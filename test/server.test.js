@@ -32,6 +32,12 @@ test('production server health, safe availability, methods and public-file isola
   for (const path of ['/.env', '/.env.example', '/server.js', '/.github/workflows/checks.yml', '/README.md']) assert.equal((await fetch(base + path)).status, 404);
   assert.equal((await fetch(`${base}/api/apple/config`)).status, 503);
   assert.equal((await fetch(base)).status, 200);
+  for (const path of ['/dashboard', '/import', '/receipt', '/history', '/account', '/help', '/navigation.js', '/pages.css']) {
+    const response = await fetch(base + path);
+    assert.equal(response.status, 200, path);
+    assert.match(response.headers.get('content-security-policy'), /default-src 'self'/);
+  }
+  assert.equal((await fetch(base + '/not-a-page')).status, 404);
   for (const name of ['logo', 'favicon-32', 'favicon-192', 'apple-touch-icon']) {
     const image = await fetch(`${base}/assets/${name}.png`);
     assert.equal(image.status, 200);

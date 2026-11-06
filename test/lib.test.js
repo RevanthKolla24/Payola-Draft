@@ -18,6 +18,17 @@ test('audits unsupported, missing metadata, invalid dates and durations', () => 
   const s = summarize(normalizeRecords([record({ spotify_track_uri: null }), record({ master_metadata_track_name: null }), record({ ts: 'oops' }), record({ ms_played: -1 }), null, record({ ms_played: '30000' })]));
   assert.equal(s.audit.unsupported, 2); assert.equal(s.audit.invalid, 4); assert.equal(s.plays, 0);
 });
+test('Spotify timestamps reject impossible source components before UTC normalization', () => {
+  const invalid = ['2026-02-30T23:00:00Z', '2026-02-29T00:00:00+02:00', '2024-04-31T12:00:00-02:00',
+    '2026-01-01T24:00:00Z', '2026-01-01T23:60:00Z', '2026-01-01T23:00:60Z',
+    '2026-01-01T00:00:00+24:00', '2026-01-01T00:00:00+01:60', '2026-01-01', 'January 1, 2026'];
+  const records = normalizeRecords(invalid.map(ts => record({ ts })));
+  assert.deepEqual(records, invalid.map(() => ({ invalid: true })));
+  assert.equal(summarize(records).audit.invalid, invalid.length);
+  const valid = normalizeRecords(['2024-02-29T23:30:00.12-02:00', '2026-01-01T00:30:00.1+02:00', '2026-01-01T00:00:00.123Z'].map(ts => record({ ts })));
+  assert.deepEqual(valid.map(r => r.timestamp), ['2024-03-01T01:30:00.120Z', '2025-12-31T22:30:00.100Z', '2026-01-01T00:00:00.123Z']);
+  assert.deepEqual(valid.map(r => r.date), ['2024-03-01', '2025-12-31', '2026-01-01']);
+});
 test('date filters are inclusive and UTC-based', () => {
   const records = normalizeRecords([record({ ts: '2026-05-01T23:30:00-02:00' }), record({ ts: '2026-05-01T00:00:00Z' }), record({ ts: '2026-05-03T00:00:00Z' })]);
   const s = summarize(records, { from: '2026-05-02', to: '2026-05-02' });
@@ -66,6 +77,23 @@ test('monthly counts and hours reconcile with selected totals', () => {
   assert.equal(s.months.reduce((sum, m) => sum + m.ms, 0), s.ms);
   assert.equal(summarize(normalizeRecords([record()]), { from: '2026-06-01' }).months.length, 0);
 });
+test('unknown durations affect only their own artist and month, not complete groups', () => {
+  const row = (date, artist, ms) => ({ source: 'csv', date, artist, track: 'Track', supported: true, ms });
+  const rows = [row('2026-01-01', 'Known', 3600000), row('2026-02-01', 'Mixed', null),
+    row('2026-02-02', 'Mixed', 3600000), row('2026-03-01', 'Mixed', 3600000), row('2026-04-01', 'Later unknown', 3600000), row('2026-04-02', 'Later unknown', null)];
+  const result = summarize(rows);
+  assert.equal(result.ms, null);
+  assert.equal(result.artists.find(a => a.name === 'Known').ms, 3600000);
+  assert.equal(result.artists.find(a => a.name === 'Mixed').ms, null);
+  assert.equal(result.artists.find(a => a.name === 'Later unknown').ms, null);
+  assert.deepEqual(result.months.map(m => m.ms), [3600000, null, 3600000, null]);
+  assert.equal(summarize(rows, { to: '2026-01-31' }).ms, 3600000);
+  const lastfm = summarize(rows.map(r => ({ ...r, source: 'lastfm', ms: null })));
+  assert.equal(lastfm.ms, null);
+  assert.ok(lastfm.artists.every(a => a.ms === null));
+  assert.ok(lastfm.months.every(m => m.ms === null));
+});
+
 test('listening shares include an other bucket and reconcile to 100%', () => {
   const s = summarize(sampleRecords()); const shares = listeningShares(s.artists, s.plays);
   assert.equal(shares.length, 6); assert.equal(shares[5].name, 'Other artists');

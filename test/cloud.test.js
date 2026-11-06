@@ -4,6 +4,34 @@ import { encodeCloud, decodeCloud, createCloudStore, MAX_CLOUD_BYTES, validCloud
 import { sessionText } from '../session.js';
 import { accountConfiguration, SHARED_FIREBASE_CONFIG } from '../firebase-config.js';
 const text = artist => sessionText({ mode: 'manual', selectedService: 'spotify', records: [], filters: { from: '', to: '' }, duplicates: 0, manual: { artist, plays: 10 } });
+test('cloud load has one overall deadline and stops issuing reads after expiry', async () => {
+  const { sdk } = fakeSDK();
+  const store = createCloudStore(sdk, {}, 'deadline', () => true, 80);
+  const payload = text('Deadline') + ' '.repeat(300000);
+  assert.equal(encodeCloud(payload).chunks.length, 2);
+  await store.save(payload, 0);
+  const original = sdk.getDocFromServer;
+  let reads = 0;
+  sdk.getDocFromServer = async path => {
+    reads++;
+    await new Promise(resolve => setTimeout(resolve, 50));
+    return original(path);
+  };
+  await assert.rejects(store.load(), { code: 'account/read-timeout' });
+  // Each read is faster than 80 ms, but their sum exceeds the overall budget.
+  await new Promise(resolve => setTimeout(resolve, 90));
+  assert.equal(reads, 2, 'Late chunk result must not trigger another chunk or metadata read');
+  sdk.getDocFromServer = original;
+  assert.equal((await store.load()).text, payload);
+});
+test('cloud reads time out without permanently blocking retry or writing anything', async () => {
+  let stalled = true;
+  const sdk = { doc: (_, ...path) => path.join('/'), getDocFromServer: () => stalled ? new Promise(() => {}) : Promise.resolve({ exists: () => false }) };
+  const store = createCloudStore(sdk, {}, 'one', () => true, 5);
+  await assert.rejects(store.status(), { code: 'account/read-timeout' });
+  stalled = false;
+  assert.equal(await store.status(), null);
+});
 function fakeSDK() {
   const documents = new Map();
   const sdk = {

@@ -5,13 +5,19 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { validateLastfmQuery, fetchLastfmPage, createLimiter } from './lastfm.js';
 import { accountConfiguration } from './firebase-config.js';
+import { pages } from './navigation.js';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const publicFiles = new Set(['index.html', 'styles.css', 'app.js', 'lib.js', 'importer.js', 'reports.js', 'import-job.js', 'import-worker.js', 'lastfm-client.js', 'apple.html', 'apple-client.js', 'apple.js', 'attribution.js', 'session.js', 'insights.js']);
 for (const name of ['logo', 'favicon-32', 'favicon-192', 'apple-touch-icon']) publicFiles.add(`assets/${name}.png`);
 for (const name of ['accounts.js', 'cloud.js', 'firebase-client.js', 'profile.js', 'preservation.js']) publicFiles.add(name);
+for (const name of ['collection.js', 'collection-ui.js']) publicFiles.add(name);
 publicFiles.add('csv-history.js');
 publicFiles.add('workspace.css');
+publicFiles.add('navigation.js');
+publicFiles.add('pages.css');
+publicFiles.add('account-utils.js');
+for (const name of ['explore.js', 'explore-ui.js', 'csv-guide.js']) publicFiles.add(name);
 const allowGlobal = createLimiter({ limit: 120 });
 const clients = new Map(); let activeRequests = 0;
 function integrationStatus() {
@@ -74,7 +80,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (url.pathname === '/api/lastfm') { await lastfmRequest(req, res, url); return; }
-    const name = url.pathname.slice(1) || 'index.html';
+    const name = Object.hasOwn(pages, url.pathname) ? 'index.html' : url.pathname.slice(1) || 'index.html';
     if (!publicFiles.has(name)) { res.writeHead(404); res.end('Not found'); return; }
     const content = await readFile(path.join(root, name));
     res.writeHead(200, {

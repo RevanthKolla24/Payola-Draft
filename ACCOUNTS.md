@@ -1,5 +1,27 @@
 # Optional shared accounts — real Firebase project
 
+## Receipt collection — local, undeployed
+
+Phase 1 adds a separate private receipt-summary collection with 20 fixed slots under `payolaUsers/{uid}/receipts/{slot}`. Verified owners alone may read/write; Job Tracker admins have no exception. Transactions enforce incrementing versions, including empty tombstones on deletion, to detect stale-device edits and prevent raw-history storage through the receipt schema. The client validates loaded summaries and rejects unknown fields; rules bound every field and slot.
+
+Drafts exist only in tab memory. Guest preparation and in-page signup do not upload; users refresh, review and confirm each save. Changing an existing account/signing out clears collection data and drafts immediately; epoch guards reject stale completions. Reads have a 12-second deadline and writes share the existing single-flight account lock. Uncertain writes require a refresh before retry. Receipt saves do not mark listening history as backed up. Deleting a snapshot does not delete receipts, and vice versa.
+
+The new local rules require an approved release before production use. No configuration, rules deployment or production data changes are included. Receipt previews/downloads use escaped text, never stored HTML; downloaded SVGs contain disclosures and no external resources.
+
+## Local account expansion (not deployed)
+
+### Follow-up reliability fixes
+
+Account operations now capture an identity epoch: stale timers, failures, conflicts and write/load completions cannot change the next account's status, cloud version or preservation state. Intentional identity transitions during connection/sign-in/sign-out adopt their resulting epoch; queued setup checks its epoch between profile and cloud reads. Registration waits for profile creation to settle instead of releasing the operation lock after a timeout. A delayed write keeps account controls disabled with confirmation-pending feedback, while navigation and local listening remain available. Cloud loads have a single 12-second deadline across metadata and all chunks; late reads stop the abandoned sequence and cannot restore history. Verification resend cooldown starts only after a successful send. A separate email-return notice survives connection and later operation status updates without claiming successful verification/reset. The mocked browser adapter now uses `onIdTokenChanged`, including token-refresh notifications, to exercise the production observer path.
+
+The Account page is open by default and separates sign-in, registration, password recovery, shared profile names, security, and explicit cloud history. Guest navigation never connects Firebase. Names are read as missing/incomplete/complete; create-only missing-profile recovery remains unchanged. Explicit name updates use a transaction updating only `firstName` and `lastName`, preserving roles, creation metadata and unrelated fields. An email mismatch blocks editing and requests owner review rather than silently changing shared email. Existing Firestore rules already permit these bounded name updates; no rules deployment is needed.
+
+Password changes require the current password and Firebase reauthentication, validate the 12–128-character cross-app policy, and clear password inputs on completion/error. Signed-in users can also request recovery email. Verification/reset emails retain Firebase's hosted handler and use a fixed same-origin `/account?emailAction=verify|reset` return address. Returning is not proof of success. Firebase authorized domains/email templates must support the deployed origin; real inbox delivery, expired-link handling in the hosted handler, and full Job Tracker sign-in with the new password remain manual release checks. Successful verification sends start a 60-second UI cooldown; returning to a visible tab can refresh an unverified account, at most once per 30 seconds. SDK token changes trigger identity-aware refreshes. No session-device inventory, revoke-all endpoint, email change, or shared-account deletion is claimed or implemented.
+
+Profile/cloud reads have 12-second caller timeouts; late reads cannot update application state. Retrying a read is safe. Writes remain single-flight until confirmation (the pending-write warning is not a cancellation). Account changes during operations queue setup for the latest identity. Cloud size is measured locally before Save becomes available; payload encoding is also validated before cloud version invalidation or upload confirmation. A local oversized session leaves previously checked cloud state usable for load/delete. Saved timestamps are shown when available from Firestore metadata. Password visibility, input values and Remember choices reset on identity changes/sign-out.
+
+Local validation includes helper/profile tests, the mocked account/cloud browser flows, and emulator name-update/role-preservation tests. These tests do not certify real email delivery, password policy configuration, deployed code, or cross-app behavior. No production configuration, accounts, templates, API restrictions, rules or data were modified for this expansion.
+
 ## Production configuration verified November 4, 2026
 
 **November 5 status update:** a read-only production review confirmed that live

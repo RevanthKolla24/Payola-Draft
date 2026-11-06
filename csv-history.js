@@ -40,8 +40,7 @@ export function normalizeCSV(text, mapping = { date: 'date', artist: 'artist', t
     const duration = indices.ms < 0 ? '' : values[indices.ms].trim();
     const ms = duration === '' ? null : /^\d+(\.\d+)?$/.test(duration) ? Number(duration) : NaN;
     const record = { source: 'csv', date, artist, track, ms, supported: true };
-    if (!validRecordDate(date) || !validListeningRecord(record)) return { invalid: true };
     record.eventKey = JSON.stringify(['csv', date, artist, track, ms]);
-    return record;
+    return validRecordDate(date) && validListeningRecord(record) ? record : { invalid: true };
   });
 }
